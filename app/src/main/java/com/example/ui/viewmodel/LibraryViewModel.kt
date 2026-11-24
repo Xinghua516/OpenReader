@@ -18,10 +18,12 @@ import com.example.data.local.entity.TagEntity
 import com.example.data.local.entity.TagWithCount
 import com.example.data.preferences.AppPreferences
 import com.example.data.preferences.BookshelfSortOrder
+import com.example.data.preferences.CollectionSortOrder
 import com.example.data.preferences.ComicReadingDirection
 import com.example.data.repository.ImportTask
 import com.example.data.repository.StorageStatsProvider
 import com.example.data.repository.StorageStatus
+import com.example.parser.LocalizedNaturalComparator
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -47,6 +49,7 @@ sealed interface BookshelfFilter {
 
 data class LibraryUiState(
     val allBooks: List<BookWithTags> = emptyList(),
+    val sortedBooks: List<BookWithTags> = emptyList(),
     val filteredBooks: List<BookWithTags> = emptyList(),
     val availableCategories: List<String> = emptyList(),
     val tagsWithCounts: List<TagWithCount> = emptyList(),
@@ -96,11 +99,74 @@ object BookshelfSearchEngine {
         return tokens.all { token -> matchesBookToken(item, token) }
     }
 
+    fun sortBooks(
+        books: List<BookWithTags>,
+        sortOrder: BookshelfSortOrder,
+        sortAscending: Boolean = sortOrder.defaultAscending
+    ): List<BookWithTags> {
+        if (books.size <= 1) return books
+
+        val titleComparator = Comparator<BookWithTags> { a, b ->
+            val titleCmp = LocalizedNaturalComparator.compare(a.book.title, b.book.title)
+            if (titleCmp != 0) titleCmp else a.book.id.compareTo(b.book.id)
+        }
+
+        val comparator = Comparator<BookWithTags> { a, b ->
+            val bookA = a.book
+            val bookB = b.book
+            val primary = when (sortOrder) {
+                BookshelfSortOrder.RECENT_READ -> {
+                    val timeA = maxOf(bookA.lastReadAt, bookA.addedAt)
+                    val timeB = maxOf(bookB.lastReadAt, bookB.addedAt)
+                    val raw = timeA.compareTo(timeB)
+                    if (sortAscending) raw else -raw
+                }
+                BookshelfSortOrder.ADDED_DESC -> {
+                    val raw = bookA.addedAt.compareTo(bookB.addedAt)
+                    if (sortAscending) raw else -raw
+                }
+                BookshelfSortOrder.TITLE_ASC -> {
+                    val raw = LocalizedNaturalComparator.compare(bookA.title, bookB.title)
+                    if (sortAscending) raw else -raw
+                }
+                BookshelfSortOrder.AUTHOR_ASC -> {
+                    val authA = bookA.author.trim()
+                    val authB = bookB.author.trim()
+                    when {
+                        authA.isEmpty() && authB.isEmpty() -> 0
+                        authA.isEmpty() -> 1
+                        authB.isEmpty() -> -1
+                        else -> {
+                            val raw = LocalizedNaturalComparator.compare(authA, authB)
+                            if (sortAscending) raw else -raw
+                        }
+                    }
+                }
+                BookshelfSortOrder.PROGRESS_DESC -> {
+                    val raw = bookA.progressFraction.compareTo(bookB.progressFraction)
+                    if (raw != 0) {
+                        if (sortAscending) raw else -raw
+                    } else {
+                        val unitCmp = bookA.currentUnit.compareTo(bookB.currentUnit)
+                        if (sortAscending) unitCmp else -unitCmp
+                    }
+                }
+                BookshelfSortOrder.FILE_SIZE_DESC -> {
+                    val raw = bookA.fileSizeBytes.compareTo(bookB.fileSizeBytes)
+                    if (sortAscending) raw else -raw
+                }
+            }
+            if (primary != 0) primary else titleComparator.compare(a, b)
+        }
+        return books.sortedWith(comparator)
+    }
+
     fun filterBooks(
         books: List<BookWithTags>,
         query: String,
         filter: BookshelfFilter,
-        sortOrder: BookshelfSortOrder
+        sortOrder: BookshelfSortOrder,
+        sortAscending: Boolean = sortOrder.defaultAscending
     ): List<BookWithTags> {
         val afterFilter = books.filter { item ->
             val book = item.book
@@ -124,48 +190,87 @@ object BookshelfSearchEngine {
             afterFilter.filter { item -> matchesBook(item, tokens) }
         }
 
-        return when (sortOrder) {
-            BookshelfSortOrder.RECENT_READ -> afterQuery.sortedByDescending {
-                maxOf(it.book.lastReadAt, it.book.addedAt)
+        return sortBooks(
+            books = afterQuery,
+            sortOrder = sortOrder,
+            sortAscending = sortAscending
+        )
+    }
+
+    fun sortCollections(
+        collections: List<CollectionWithCount>,
+        sortOrder: CollectionSortOrder,
+        sortAscending: Boolean = sortOrder.defaultAscending
+    ): List<CollectionWithCount> {
+        if (collections.size <= 1) return collections
+        return collections.sortedWith { a, b ->
+            val colA = a.collection
+            val colB = b.collection
+            val primary = when (sortOrder) {
+                CollectionSortOrder.CREATED_DESC -> {
+                    val raw = colA.createdAt.compareTo(colB.createdAt)
+                    if (sortAscending) raw else -raw
+                }
+                CollectionSortOrder.NAME_ASC -> {
+                    val raw = LocalizedNaturalComparator.compare(colA.name, colB.name)
+                    if (sortAscending) raw else -raw
+                }
+                CollectionSortOrder.BOOK_COUNT_DESC -> {
+                    val raw = a.bookCount.compareTo(b.bookCount)
+                    if (sortAscending) raw else -raw
+                }
             }
-            BookshelfSortOrder.ADDED_DESC -> afterQuery.sortedByDescending { it.book.addedAt }
-            BookshelfSortOrder.TITLE_ASC -> afterQuery.sortedBy { it.book.title.lowercase() }
-            BookshelfSortOrder.PROGRESS_DESC -> afterQuery.sortedByDescending { it.book.progressFraction }
+            if (primary != 0) {
+                primary
+            } else {
+                val nameCmp = LocalizedNaturalComparator.compare(colA.name, colB.name)
+                if (nameCmp != 0) nameCmp else colA.id.compareTo(colB.id)
+            }
         }
     }
 
     fun filterCollections(
         collections: List<CollectionWithCount>,
         books: List<BookWithTags>,
-        query: String
+        query: String,
+        sortOrder: CollectionSortOrder = CollectionSortOrder.CREATED_DESC,
+        sortAscending: Boolean = sortOrder.defaultAscending
     ): List<CollectionWithCount> {
         val tokens = tokenize(query)
-        if (tokens.isEmpty()) return collections
-
-        val booksByCollectionId = HashMap<Long, MutableList<BookWithTags>>()
-        books.forEach { item ->
-            item.collections.forEach { col ->
-                booksByCollectionId.getOrPut(col.id) { mutableListOf() }.add(item)
+        val matched = if (tokens.isEmpty()) {
+            collections
+        } else {
+            val booksByCollectionId = HashMap<Long, MutableList<BookWithTags>>()
+            books.forEach { item ->
+                item.collections.forEach { col ->
+                    booksByCollectionId.getOrPut(col.id) { mutableListOf() }.add(item)
+                }
             }
-        }
 
-        return collections.filter { colWithCount ->
-            val col = colWithCount.collection
-            val matchesCollectionMetaOnly = tokens.all { token ->
-                col.name.contains(token, ignoreCase = true) ||
-                    col.description.contains(token, ignoreCase = true)
-            }
-            if (matchesCollectionMetaOnly) return@filter true
-
-            val members = booksByCollectionId[col.id].orEmpty()
-            members.any { member ->
-                tokens.all { token ->
+            collections.filter { colWithCount ->
+                val col = colWithCount.collection
+                val matchesCollectionMetaOnly = tokens.all { token ->
                     col.name.contains(token, ignoreCase = true) ||
-                        col.description.contains(token, ignoreCase = true) ||
-                        matchesBookToken(member, token)
+                        col.description.contains(token, ignoreCase = true)
+                }
+                if (matchesCollectionMetaOnly) return@filter true
+
+                val members = booksByCollectionId[col.id].orEmpty()
+                members.any { member ->
+                    tokens.all { token ->
+                        col.name.contains(token, ignoreCase = true) ||
+                            col.description.contains(token, ignoreCase = true) ||
+                            matchesBookToken(member, token)
+                    }
                 }
             }
         }
+
+        return sortCollections(
+            collections = matched,
+            sortOrder = sortOrder,
+            sortAscending = sortAscending
+        )
     }
 }
 
@@ -222,22 +327,35 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         prefsRepo.preferencesFlow,
         filterInputs
     ) { snapshot, prefs, inputs ->
+        val sortedBooks = BookshelfSearchEngine.sortBooks(
+            books = snapshot.books,
+            sortOrder = prefs.sortOrder,
+            sortAscending = prefs.sortAscending
+        )
         val filteredBooks = BookshelfSearchEngine.filterBooks(
             books = snapshot.books,
             query = inputs.bookshelfQuery,
             filter = inputs.filter,
-            sortOrder = prefs.sortOrder
+            sortOrder = prefs.sortOrder,
+            sortAscending = prefs.sortAscending
+        )
+        val sortedCollections = BookshelfSearchEngine.sortCollections(
+            collections = snapshot.collections,
+            sortOrder = prefs.collectionSortOrder,
+            sortAscending = prefs.collectionSortAscending
         )
         val filteredCollections = BookshelfSearchEngine.filterCollections(
-            collections = snapshot.collections,
+            collections = sortedCollections,
             books = snapshot.books,
-            query = inputs.bookshelfQuery
+            query = inputs.bookshelfQuery,
+            sortOrder = prefs.collectionSortOrder,
+            sortAscending = prefs.collectionSortAscending
         )
         val categories = snapshot.books
             .map { it.book.categoryGroup }
             .filter { it.isNotBlank() && it != "未归类" }
             .distinct()
-            .sorted()
+            .sortedWith(LocalizedNaturalComparator)
 
         val matchingTags = if (inputs.tagQuery.isBlank()) {
             snapshot.tags
@@ -252,11 +370,12 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
 
         LibraryUiState(
             allBooks = snapshot.books,
+            sortedBooks = sortedBooks,
             filteredBooks = filteredBooks,
             availableCategories = categories,
             tagsWithCounts = snapshot.tags,
             filteredTagGroups = groupedTags,
-            collectionsWithCounts = snapshot.collections,
+            collectionsWithCounts = sortedCollections,
             filteredCollections = filteredCollections,
             smartRules = snapshot.rules,
             authorizedFolders = snapshot.folders,
@@ -294,7 +413,37 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setSortOrder(order: BookshelfSortOrder) {
-        viewModelScope.launch { prefsRepo.setSortOrder(order) }
+        viewModelScope.launch {
+            val currentPrefs = uiState.value.preferences
+            if (currentPrefs.sortOrder == order) {
+                prefsRepo.setSortAscending(!currentPrefs.sortAscending)
+            } else {
+                prefsRepo.setSortOrder(order, order.defaultAscending)
+            }
+        }
+    }
+
+    fun toggleSortDirection() {
+        viewModelScope.launch {
+            prefsRepo.setSortAscending(!uiState.value.preferences.sortAscending)
+        }
+    }
+
+    fun setCollectionSortOrder(order: CollectionSortOrder) {
+        viewModelScope.launch {
+            val currentPrefs = uiState.value.preferences
+            if (currentPrefs.collectionSortOrder == order) {
+                prefsRepo.setCollectionSortAscending(!currentPrefs.collectionSortAscending)
+            } else {
+                prefsRepo.setCollectionSortOrder(order, order.defaultAscending)
+            }
+        }
+    }
+
+    fun toggleCollectionSortDirection() {
+        viewModelScope.launch {
+            prefsRepo.setCollectionSortAscending(!uiState.value.preferences.collectionSortAscending)
+        }
     }
 
     fun setUseDynamicColor(enabled: Boolean) {

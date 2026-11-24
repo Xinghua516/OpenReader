@@ -311,6 +311,9 @@ private fun TonalFolioRoot(
                                 onSelectFilter = libraryViewModel::selectBookshelfFilter,
                                 onToggleGridView = libraryViewModel::toggleGridView,
                                 onSelectSortOrder = libraryViewModel::setSortOrder,
+                                onToggleSortDirection = libraryViewModel::toggleSortDirection,
+                                onSelectCollectionSortOrder = libraryViewModel::setCollectionSortOrder,
+                                onToggleCollectionSortDirection = libraryViewModel::toggleCollectionSortDirection,
                                 onOpenBook = { bookId ->
                                     navController.navigate(AppRoutes.reader(bookId))
                                 },

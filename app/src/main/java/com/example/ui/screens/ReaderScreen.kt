@@ -43,6 +43,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.MoreVert
@@ -52,6 +54,7 @@ import androidx.compose.material.icons.outlined.Crop
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.MenuBook
+import androidx.compose.material.icons.outlined.MyLocation
 import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material.icons.outlined.TextFields
 import androidx.compose.material3.Button
@@ -1229,6 +1232,39 @@ private fun TocBottomSheet(
     onSelectChapter: (Int) -> Unit,
     onSelectPage: (Int) -> Unit
 ) {
+    var reverseOrder by remember { mutableStateOf(false) }
+    val chapters = state.epubStructure?.chapters.orEmpty()
+    val showChapters = state.displayMode == ReaderDisplayMode.EPUB_TYPOGRAPHY && chapters.isNotEmpty()
+    val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+
+    val displayedChapters = remember(chapters, reverseOrder) {
+        if (reverseOrder) chapters.reversed() else chapters
+    }
+    val displayedPageIndices = remember(state.comicPages.size, reverseOrder) {
+        if (reverseOrder) (state.comicPages.indices).reversed().toList() else state.comicPages.indices.toList()
+    }
+
+    val activeDisplayPosition = remember(
+        showChapters,
+        displayedChapters,
+        displayedPageIndices,
+        state.currentChapterIndex,
+        state.currentComicPage
+    ) {
+        if (showChapters) {
+            displayedChapters.indexOfFirst { it.index == state.currentChapterIndex }.coerceAtLeast(0)
+        } else {
+            displayedPageIndices.indexOf(state.currentComicPage).coerceAtLeast(0)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (activeDisplayPosition > 0) {
+            listState.scrollToItem((activeDisplayPosition - 2).coerceAtLeast(0))
+        }
+    }
+
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -1236,19 +1272,87 @@ private fun TocBottomSheet(
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 24.dp)
         ) {
-            val chapters = state.epubStructure?.chapters.orEmpty()
-            val showChapters = state.displayMode == ReaderDisplayMode.EPUB_TYPOGRAPHY && chapters.isNotEmpty()
-            Text(
-                text = if (showChapters) "章节目录 (${chapters.size})" else "页面索引 (${state.comicPages.size})",
-                style = MaterialTheme.typography.titleLarge
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = if (showChapters) "章节目录 (${chapters.size})" else "页面索引 (${state.comicPages.size})",
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.weight(1f)
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        onClick = {
+                            coroutineScope.launch {
+                                listState.animateScrollToItem((activeDisplayPosition - 1).coerceAtLeast(0))
+                            }
+                        },
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        modifier = Modifier.testTag("toc_locate_current")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.MyLocation,
+                                contentDescription = "定位当前",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = "当前",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+
+                    Surface(
+                        onClick = { reverseOrder = !reverseOrder },
+                        shape = CircleShape,
+                        color = if (reverseOrder) {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerHigh
+                        },
+                        modifier = Modifier.testTag("toc_sort_toggle")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (reverseOrder) Icons.Filled.ArrowDownward else Icons.Filled.ArrowUpward,
+                                contentDescription = if (reverseOrder) "倒序" else "正序",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = if (reverseOrder) "倒序" else "正序",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+            }
             Spacer(modifier = Modifier.height(12.dp))
             LazyColumn(
+                state = listState,
                 modifier = Modifier.height(340.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 if (showChapters) {
-                    items(chapters, key = { it.index }) { ch ->
+                    items(displayedChapters, key = { it.index }) { ch ->
                         val active = ch.index == state.currentChapterIndex
                         Surface(
                             onClick = { onSelectChapter(ch.index) },
@@ -1267,7 +1371,7 @@ private fun TocBottomSheet(
                         }
                     }
                 } else {
-                    items(state.comicPages.size) { idx ->
+                    items(displayedPageIndices, key = { it }) { idx ->
                         val active = idx == state.currentComicPage
                         Surface(
                             onClick = { onSelectPage(idx) },
@@ -1297,6 +1401,14 @@ private fun TocBottomSheet(
     }
 }
 
+private enum class BookmarkSortMode(
+    val label: String,
+    val defaultAscending: Boolean
+) {
+    BY_POSITION("按位置", true),
+    BY_TIME("按时间", false)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BookmarksBottomSheet(
@@ -1305,6 +1417,25 @@ private fun BookmarksBottomSheet(
     onJump: (com.example.data.local.entity.BookmarkEntity) -> Unit,
     onDelete: (com.example.data.local.entity.BookmarkEntity) -> Unit
 ) {
+    var sortMode by remember { mutableStateOf(BookmarkSortMode.BY_POSITION) }
+    var sortAscending by remember { mutableStateOf(true) }
+
+    val sortedBookmarks = remember(state.bookmarks, sortMode, sortAscending) {
+        state.bookmarks.sortedWith { a, b ->
+            val primary = when (sortMode) {
+                BookmarkSortMode.BY_POSITION -> {
+                    val raw = a.unitIndex.compareTo(b.unitIndex)
+                    if (sortAscending) raw else -raw
+                }
+                BookmarkSortMode.BY_TIME -> {
+                    val raw = a.createdAt.compareTo(b.createdAt)
+                    if (sortAscending) raw else -raw
+                }
+            }
+            if (primary != 0) primary else a.id.compareTo(b.id)
+        }
+    }
+
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -1313,8 +1444,78 @@ private fun BookmarksBottomSheet(
                 .padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text("书签 (${state.bookmarks.size})", style = MaterialTheme.typography.titleLarge)
-            if (state.bookmarks.isEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "书签 (${state.bookmarks.size})",
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.weight(1f)
+                )
+                if (state.bookmarks.size > 1) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        BookmarkSortMode.entries.forEach { mode ->
+                            val selected = sortMode == mode
+                            Surface(
+                                onClick = {
+                                    if (selected) {
+                                        sortAscending = !sortAscending
+                                    } else {
+                                        sortMode = mode
+                                        sortAscending = mode.defaultAscending
+                                    }
+                                },
+                                shape = CircleShape,
+                                color = if (selected) {
+                                    MaterialTheme.colorScheme.secondaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainerLow
+                                },
+                                modifier = Modifier.testTag("bookmarks_sort_${mode.name.lowercase()}")
+                            ) {
+                                Text(
+                                    text = mode.label,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                                    ),
+                                    color = if (selected) {
+                                        MaterialTheme.colorScheme.onSecondaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+
+                        Surface(
+                            onClick = { sortAscending = !sortAscending },
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            modifier = Modifier.testTag("bookmarks_sort_direction")
+                        ) {
+                            Box(
+                                modifier = Modifier.padding(6.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = if (sortAscending) Icons.Filled.ArrowUpward else Icons.Filled.ArrowDownward,
+                                    contentDescription = if (sortAscending) "升序" else "降序",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (sortedBookmarks.isEmpty()) {
                 Text(
                     text = "暂无书签，点击顶部书签图标即可收藏当前阅读位置。",
                     style = MaterialTheme.typography.bodyMedium,
@@ -1326,7 +1527,7 @@ private fun BookmarksBottomSheet(
                     modifier = Modifier.height(280.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(state.bookmarks, key = { it.id }) { bm ->
+                    items(sortedBookmarks, key = { it.id }) { bm ->
                         Surface(
                             onClick = { onJump(bm) },
                             shape = RoundedCornerShape(14.dp),

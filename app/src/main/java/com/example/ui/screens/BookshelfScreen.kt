@@ -38,9 +38,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.MenuBook
+import androidx.compose.material.icons.automirrored.outlined.NoteAdd
 import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
@@ -53,8 +57,10 @@ import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.LibraryBooks
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.SortByAlpha
+import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -101,6 +107,7 @@ import com.example.data.local.entity.CollectionWithCount
 import com.example.data.local.entity.ReadingStatus
 import com.example.data.local.entity.TagWithCount
 import com.example.data.preferences.BookshelfSortOrder
+import com.example.data.preferences.CollectionSortOrder
 import com.example.ui.components.BookCoverArtwork
 import com.example.ui.components.TonalSearchBar
 import com.example.ui.components.TonalTopBar
@@ -114,6 +121,9 @@ fun BookshelfScreen(
     onSelectFilter: (BookshelfFilter) -> Unit,
     onToggleGridView: () -> Unit,
     onSelectSortOrder: (BookshelfSortOrder) -> Unit,
+    onToggleSortDirection: () -> Unit,
+    onSelectCollectionSortOrder: (CollectionSortOrder) -> Unit,
+    onToggleCollectionSortDirection: () -> Unit,
     onOpenBook: (Long) -> Unit,
     onQuickImportFiles: () -> Unit,
     onNavigateToImportCenter: () -> Unit,
@@ -273,12 +283,50 @@ fun BookshelfScreen(
                             expanded = sortMenuExpanded,
                             onDismissRequest = { sortMenuExpanded = false }
                         ) {
+                            val isAsc = uiState.preferences.sortAscending
+                            DropdownMenuItem(
+                                text = {
+                                    Text(if (isAsc) "排序方向：升序（点击改降序）" else "排序方向：降序（点击改升序）")
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = if (isAsc) Icons.Filled.ArrowUpward else Icons.Filled.ArrowDownward,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                },
+                                onClick = {
+                                    onToggleSortDirection()
+                                    sortMenuExpanded = false
+                                }
+                            )
+                            HorizontalDivider()
                             BookshelfSortOrder.entries.forEach { order ->
+                                val selected = uiState.preferences.sortOrder == order
                                 DropdownMenuItem(
                                     text = { Text(order.label) },
                                     trailingIcon = {
-                                        if (uiState.preferences.sortOrder == order) {
-                                            Icon(Icons.Filled.Check, contentDescription = null)
+                                        if (selected) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (isAsc) {
+                                                        Icons.Filled.ArrowUpward
+                                                    } else {
+                                                        Icons.Filled.ArrowDownward
+                                                    },
+                                                    contentDescription = if (isAsc) "升序" else "降序",
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                                Icon(
+                                                    imageVector = Icons.Filled.Check,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
                                         }
                                     },
                                     onClick = {
@@ -424,7 +472,7 @@ fun BookshelfScreen(
                                 } else {
                                     CollapsibleCollectionsSection(
                                         collections = uiState.filteredCollections,
-                                        allBooks = uiState.allBooks,
+                                        allBooks = uiState.sortedBooks.ifEmpty { uiState.allBooks },
                                         expanded = effectiveCollectionsExpanded,
                                         onToggleExpanded = {
                                             hasUserToggledCollections = true
@@ -447,7 +495,11 @@ fun BookshelfScreen(
                                             deletingCollection = col
                                         },
                                         totalCollectionsCount = uiState.collectionsWithCounts.size,
-                                        searchQuery = uiState.bookshelfSearchQuery
+                                        searchQuery = uiState.bookshelfSearchQuery,
+                                        collectionSortOrder = uiState.preferences.collectionSortOrder,
+                                        collectionSortAscending = uiState.preferences.collectionSortAscending,
+                                        onSelectCollectionSortOrder = onSelectCollectionSortOrder,
+                                        onToggleCollectionSortDirection = onToggleCollectionSortDirection
                                     )
                                 }
                             }
@@ -459,7 +511,9 @@ fun BookshelfScreen(
                                     totalCount = uiState.allBooks.size,
                                     filteredCount = uiState.filteredBooks.size,
                                     currentSort = uiState.preferences.sortOrder,
+                                    sortAscending = uiState.preferences.sortAscending,
                                     onSelectSortOrder = onSelectSortOrder,
+                                    onToggleSortDirection = onToggleSortDirection,
                                     hasActiveFilterOrSearch = isSearchActive || uiState.activeFilter !is BookshelfFilter.All,
                                     onClearFilters = {
                                         onSearchChange("")
@@ -555,7 +609,7 @@ fun BookshelfScreen(
                             } else {
                                 CollapsibleCollectionsSection(
                                     collections = uiState.filteredCollections,
-                                    allBooks = uiState.allBooks,
+                                    allBooks = uiState.sortedBooks.ifEmpty { uiState.allBooks },
                                     expanded = effectiveCollectionsExpanded,
                                     onToggleExpanded = {
                                         hasUserToggledCollections = true
@@ -578,7 +632,11 @@ fun BookshelfScreen(
                                         deletingCollection = col
                                     },
                                     totalCollectionsCount = uiState.collectionsWithCounts.size,
-                                    searchQuery = uiState.bookshelfSearchQuery
+                                    searchQuery = uiState.bookshelfSearchQuery,
+                                    collectionSortOrder = uiState.preferences.collectionSortOrder,
+                                    collectionSortAscending = uiState.preferences.collectionSortAscending,
+                                    onSelectCollectionSortOrder = onSelectCollectionSortOrder,
+                                    onToggleCollectionSortDirection = onToggleCollectionSortDirection
                                 )
                             }
                         }
@@ -590,7 +648,9 @@ fun BookshelfScreen(
                                 totalCount = uiState.allBooks.size,
                                 filteredCount = uiState.filteredBooks.size,
                                 currentSort = uiState.preferences.sortOrder,
+                                sortAscending = uiState.preferences.sortAscending,
                                 onSelectSortOrder = onSelectSortOrder,
+                                onToggleSortDirection = onToggleSortDirection,
                                 hasActiveFilterOrSearch = isSearchActive || uiState.activeFilter !is BookshelfFilter.All,
                                 onClearFilters = {
                                     onSearchChange("")
@@ -923,7 +983,7 @@ fun BookshelfScreen(
     if (activeManagingBooksCollection != null) {
         ManageCollectionBooksSheet(
             collection = activeManagingBooksCollection,
-            allBooks = uiState.allBooks,
+            allBooks = uiState.sortedBooks.ifEmpty { uiState.allBooks },
             onDismiss = { managingBooksCollection = null },
             onSaveMembership = { bookIds ->
                 onSetBooksInCollection(activeManagingBooksCollection.id, bookIds)
@@ -971,71 +1031,116 @@ private fun BookshelfQuickSortBar(
     totalCount: Int,
     filteredCount: Int,
     currentSort: BookshelfSortOrder,
+    sortAscending: Boolean,
     onSelectSortOrder: (BookshelfSortOrder) -> Unit,
+    onToggleSortDirection: () -> Unit,
     hasActiveFilterOrSearch: Boolean = false,
     onClearFilters: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    val isRecentSelected = currentSort == BookshelfSortOrder.RECENT_READ ||
-        currentSort == BookshelfSortOrder.ADDED_DESC
-    val isAlphaSelected = currentSort == BookshelfSortOrder.TITLE_ASC
-
-    Row(
+    Column(
         modifier = modifier,
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Row(
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.weight(1f, fill = false)
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(
-                text = if (filteredCount == totalCount) {
-                    "共 $totalCount 本"
-                } else {
-                    "显示 $filteredCount / $totalCount 本"
-                },
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            if (hasActiveFilterOrSearch) {
-                Surface(
-                    onClick = onClearFilters,
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    modifier = Modifier.testTag("clear_bookshelf_filters_chip")
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.weight(1f, fill = false)
+            ) {
+                Text(
+                    text = if (filteredCount == totalCount) {
+                        "共 $totalCount 本"
+                    } else {
+                        "显示 $filteredCount / $totalCount 本"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (hasActiveFilterOrSearch) {
+                    Surface(
+                        onClick = onClearFilters,
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        modifier = Modifier.testTag("clear_bookshelf_filters_chip")
+                    ) {
+                        Text(
+                            text = "清除",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+            }
+
+            Surface(
+                onClick = onToggleSortDirection,
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier.testTag("sort_direction_chip")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
+                    Icon(
+                        imageVector = if (sortAscending) Icons.Filled.ArrowUpward else Icons.Filled.ArrowDownward,
+                        contentDescription = if (sortAscending) "切换为降序" else "切换为升序",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp)
+                    )
                     Text(
-                        text = "清除",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        text = if (sortAscending) "升序" else "降序",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 }
             }
         }
 
         Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            SortTogglePill(
-                selected = isRecentSelected,
-                icon = Icons.Outlined.Schedule,
-                label = "最近",
-                onClick = { onSelectSortOrder(BookshelfSortOrder.RECENT_READ) },
-                modifier = Modifier.testTag("sort_recent_chip")
-            )
-            SortTogglePill(
-                selected = isAlphaSelected,
-                icon = Icons.Outlined.SortByAlpha,
-                label = "A-Z 排序",
-                onClick = { onSelectSortOrder(BookshelfSortOrder.TITLE_ASC) },
-                modifier = Modifier.testTag("sort_alpha_chip")
-            )
+            BookshelfSortOrder.entries.forEach { order ->
+                val selected = currentSort == order
+                val icon = when (order) {
+                    BookshelfSortOrder.RECENT_READ -> Icons.Outlined.Schedule
+                    BookshelfSortOrder.ADDED_DESC -> Icons.AutoMirrored.Outlined.NoteAdd
+                    BookshelfSortOrder.TITLE_ASC -> Icons.Outlined.SortByAlpha
+                    BookshelfSortOrder.AUTHOR_ASC -> Icons.Outlined.Person
+                    BookshelfSortOrder.PROGRESS_DESC -> Icons.AutoMirrored.Outlined.MenuBook
+                    BookshelfSortOrder.FILE_SIZE_DESC -> Icons.Outlined.Storage
+                }
+                val tag = when (order) {
+                    BookshelfSortOrder.RECENT_READ -> "sort_recent_chip"
+                    BookshelfSortOrder.ADDED_DESC -> "sort_added_chip"
+                    BookshelfSortOrder.TITLE_ASC -> "sort_alpha_chip"
+                    BookshelfSortOrder.AUTHOR_ASC -> "sort_author_chip"
+                    BookshelfSortOrder.PROGRESS_DESC -> "sort_progress_chip"
+                    BookshelfSortOrder.FILE_SIZE_DESC -> "sort_size_chip"
+                }
+                SortTogglePill(
+                    selected = selected,
+                    icon = icon,
+                    label = order.shortLabel,
+                    showDirectionArrow = selected,
+                    ascending = sortAscending,
+                    onClick = { onSelectSortOrder(order) },
+                    modifier = Modifier.testTag(tag)
+                )
+            }
         }
     }
 }
@@ -1045,6 +1150,8 @@ private fun SortTogglePill(
     selected: Boolean,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
+    showDirectionArrow: Boolean,
+    ascending: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1080,6 +1187,14 @@ private fun SortTogglePill(
                     MaterialTheme.colorScheme.onSurfaceVariant
                 }
             )
+            if (showDirectionArrow) {
+                Icon(
+                    imageVector = if (ascending) Icons.Filled.ArrowUpward else Icons.Filled.ArrowDownward,
+                    contentDescription = if (ascending) "升序" else "降序",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(13.dp)
+                )
+            }
         }
     }
 }

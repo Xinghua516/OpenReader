@@ -25,11 +25,27 @@ enum class EpubReaderTheme(val label: String) {
     NIGHT("深色")
 }
 
-enum class BookshelfSortOrder(val label: String) {
-    RECENT_READ("最近阅读"),
-    ADDED_DESC("最新导入"),
-    TITLE_ASC("书名排序"),
-    PROGRESS_DESC("阅读进度")
+enum class BookshelfSortOrder(
+    val label: String,
+    val shortLabel: String,
+    val defaultAscending: Boolean
+) {
+    RECENT_READ("最近阅读", "最近阅读", false),
+    ADDED_DESC("最新导入", "导入时间", false),
+    TITLE_ASC("书名排序", "书名", true),
+    AUTHOR_ASC("作者排序", "作者", true),
+    PROGRESS_DESC("阅读进度", "进度", false),
+    FILE_SIZE_DESC("文件大小", "大小", false)
+}
+
+enum class CollectionSortOrder(
+    val label: String,
+    val shortLabel: String,
+    val defaultAscending: Boolean
+) {
+    CREATED_DESC("创建时间", "创建时间", false),
+    NAME_ASC("名称排序", "名称", true),
+    BOOK_COUNT_DESC("藏书数量", "藏书数", false)
 }
 
 data class AppPreferences(
@@ -38,6 +54,9 @@ data class AppPreferences(
     val skipDuplicates: Boolean = true,
     val isGridView: Boolean = true,
     val sortOrder: BookshelfSortOrder = BookshelfSortOrder.RECENT_READ,
+    val sortAscending: Boolean = false,
+    val collectionSortOrder: CollectionSortOrder = CollectionSortOrder.CREATED_DESC,
+    val collectionSortAscending: Boolean = false,
     val useDynamicColor: Boolean = false,
     val darkModeOverride: Boolean? = null,
     val comicReadingDirection: ComicReadingDirection = ComicReadingDirection.MANGA_RTL,
@@ -59,6 +78,9 @@ class AppPreferencesRepository(private val context: Context) {
         val SKIP_DUPLICATES = booleanPreferencesKey("skip_duplicates")
         val IS_GRID_VIEW = booleanPreferencesKey("is_grid_view")
         val SORT_ORDER = stringPreferencesKey("sort_order")
+        val SORT_ASCENDING = booleanPreferencesKey("sort_ascending")
+        val COLLECTION_SORT_ORDER = stringPreferencesKey("collection_sort_order")
+        val COLLECTION_SORT_ASCENDING = booleanPreferencesKey("collection_sort_ascending")
         val USE_DYNAMIC_COLOR = booleanPreferencesKey("use_dynamic_color")
         val DARK_MODE_OVERRIDE = stringPreferencesKey("dark_mode_override")
         val COMIC_DIRECTION = stringPreferencesKey("comic_direction")
@@ -73,14 +95,22 @@ class AppPreferencesRepository(private val context: Context) {
     }
 
     val preferencesFlow: Flow<AppPreferences> = context.dataStore.data.map { prefs ->
+        val resolvedSortOrder = prefs[Keys.SORT_ORDER]?.let {
+            runCatching { BookshelfSortOrder.valueOf(it) }.getOrNull()
+        } ?: BookshelfSortOrder.RECENT_READ
+        val resolvedCollectionSortOrder = prefs[Keys.COLLECTION_SORT_ORDER]?.let {
+            runCatching { CollectionSortOrder.valueOf(it) }.getOrNull()
+        } ?: CollectionSortOrder.CREATED_DESC
+
         AppPreferences(
             autoCacheCovers = prefs[Keys.AUTO_CACHE_COVERS] ?: true,
             autoTagByFilename = prefs[Keys.AUTO_TAG_FILENAME] ?: true,
             skipDuplicates = prefs[Keys.SKIP_DUPLICATES] ?: true,
             isGridView = prefs[Keys.IS_GRID_VIEW] ?: true,
-            sortOrder = prefs[Keys.SORT_ORDER]?.let {
-                runCatching { BookshelfSortOrder.valueOf(it) }.getOrNull()
-            } ?: BookshelfSortOrder.RECENT_READ,
+            sortOrder = resolvedSortOrder,
+            sortAscending = prefs[Keys.SORT_ASCENDING] ?: resolvedSortOrder.defaultAscending,
+            collectionSortOrder = resolvedCollectionSortOrder,
+            collectionSortAscending = prefs[Keys.COLLECTION_SORT_ASCENDING] ?: resolvedCollectionSortOrder.defaultAscending,
             useDynamicColor = prefs[Keys.USE_DYNAMIC_COLOR] ?: false,
             darkModeOverride = when (prefs[Keys.DARK_MODE_OVERRIDE]) {
                 "DARK" -> true
@@ -119,8 +149,32 @@ class AppPreferencesRepository(private val context: Context) {
         context.dataStore.edit { it[Keys.IS_GRID_VIEW] = grid }
     }
 
-    suspend fun setSortOrder(order: BookshelfSortOrder) {
-        context.dataStore.edit { it[Keys.SORT_ORDER] = order.name }
+    suspend fun setSortOrder(
+        order: BookshelfSortOrder,
+        ascending: Boolean = order.defaultAscending
+    ) {
+        context.dataStore.edit {
+            it[Keys.SORT_ORDER] = order.name
+            it[Keys.SORT_ASCENDING] = ascending
+        }
+    }
+
+    suspend fun setSortAscending(ascending: Boolean) {
+        context.dataStore.edit { it[Keys.SORT_ASCENDING] = ascending }
+    }
+
+    suspend fun setCollectionSortOrder(
+        order: CollectionSortOrder,
+        ascending: Boolean = order.defaultAscending
+    ) {
+        context.dataStore.edit {
+            it[Keys.COLLECTION_SORT_ORDER] = order.name
+            it[Keys.COLLECTION_SORT_ASCENDING] = ascending
+        }
+    }
+
+    suspend fun setCollectionSortAscending(ascending: Boolean) {
+        context.dataStore.edit { it[Keys.COLLECTION_SORT_ASCENDING] = ascending }
     }
 
     suspend fun setUseDynamicColor(enabled: Boolean) {

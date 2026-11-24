@@ -36,7 +36,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -82,6 +85,9 @@ import androidx.compose.ui.unit.dp
 import com.example.data.local.entity.BookWithTags
 import com.example.data.local.entity.CollectionEntity
 import com.example.data.local.entity.CollectionWithCount
+import com.example.data.local.entity.ReadingStatus
+import com.example.data.preferences.CollectionSortOrder
+import com.example.parser.LocalizedNaturalComparator
 import com.example.ui.components.BookCoverArtwork
 import com.example.ui.components.TonalSearchBar
 import com.example.ui.theme.TagPresetColors
@@ -99,9 +105,14 @@ fun CollapsibleCollectionsSection(
     onDeleteCollectionClick: (CollectionEntity) -> Unit,
     modifier: Modifier = Modifier,
     totalCollectionsCount: Int = collections.size,
-    searchQuery: String = ""
+    searchQuery: String = "",
+    collectionSortOrder: CollectionSortOrder = CollectionSortOrder.CREATED_DESC,
+    collectionSortAscending: Boolean = false,
+    onSelectCollectionSortOrder: (CollectionSortOrder) -> Unit = {},
+    onToggleCollectionSortDirection: () -> Unit = {}
 ) {
     val isSearchActive = searchQuery.isNotBlank()
+    var sortMenuExpanded by remember { mutableStateOf(false) }
     val chevronRotation by animateFloatAsState(
         targetValue = if (expanded) 0f else -90f,
         animationSpec = tween(durationMillis = 200),
@@ -186,28 +197,118 @@ fun CollapsibleCollectionsSection(
                 }
             }
 
-            Surface(
-                onClick = onCreateCollectionClick,
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.testTag("create_collection_button")
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                if (totalCollectionsCount > 1) {
+                    Box {
+                        Surface(
+                            onClick = { sortMenuExpanded = true },
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceContainerLow,
+                            modifier = Modifier.testTag("collection_sort_button")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Outlined.Sort,
+                                    contentDescription = "合集排序",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = collectionSortOrder.shortLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Icon(
+                                    imageVector = if (collectionSortAscending) {
+                                        Icons.Filled.ArrowUpward
+                                    } else {
+                                        Icons.Filled.ArrowDownward
+                                    },
+                                    contentDescription = if (collectionSortAscending) "升序" else "降序",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                        }
+
+                        DropdownMenu(
+                            expanded = sortMenuExpanded,
+                            onDismissRequest = { sortMenuExpanded = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(if (collectionSortAscending) "方向：升序（点击改降序）" else "方向：降序（点击改升序）")
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = if (collectionSortAscending) {
+                                            Icons.Filled.ArrowUpward
+                                        } else {
+                                            Icons.Filled.ArrowDownward
+                                        },
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                },
+                                onClick = {
+                                    onToggleCollectionSortDirection()
+                                    sortMenuExpanded = false
+                                }
+                            )
+                            HorizontalDivider()
+                            CollectionSortOrder.entries.forEach { order ->
+                                val selected = order == collectionSortOrder
+                                DropdownMenuItem(
+                                    text = { Text(order.label) },
+                                    trailingIcon = {
+                                        if (selected) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Check,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    },
+                                    onClick = {
+                                        onSelectCollectionSortOrder(order)
+                                        sortMenuExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Surface(
+                    onClick = onCreateCollectionClick,
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier.testTag("create_collection_button")
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.Add,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Text(
-                        text = "新建合集",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Add,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = "新建合集",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                 }
             }
         }
@@ -823,6 +924,16 @@ fun CreateEditCollectionDialog(
     )
 }
 
+private enum class CollectionBookPickerSort(
+    val label: String,
+    val defaultAscending: Boolean
+) {
+    SELECTED_FIRST("已选优先", false),
+    RECENT("最近阅读", false),
+    TITLE("书名", true),
+    PROGRESS("阅读进度", false)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ManageCollectionBooksSheet(
@@ -832,6 +943,8 @@ fun ManageCollectionBooksSheet(
     onSaveMembership: (Set<Long>) -> Unit
 ) {
     var search by remember { mutableStateOf("") }
+    var sortMode by remember(collection.id) { mutableStateOf(CollectionBookPickerSort.SELECTED_FIRST) }
+    var sortAscending by remember(collection.id) { mutableStateOf(false) }
     var selectedBookIds by remember(collection.id) {
         mutableStateOf(
             allBooks.filter { item -> item.collections.any { it.id == collection.id } }
@@ -840,13 +953,52 @@ fun ManageCollectionBooksSheet(
         )
     }
 
-    val filtered = remember(search, allBooks) {
-        if (search.isBlank()) allBooks
-        else {
+    val filtered = remember(search, allBooks, sortMode, sortAscending, selectedBookIds) {
+        val base = if (search.isBlank()) {
+            allBooks
+        } else {
             val q = search.trim()
             allBooks.filter {
                 it.book.title.contains(q, ignoreCase = true) ||
-                    it.book.author.contains(q, ignoreCase = true)
+                    it.book.author.contains(q, ignoreCase = true) ||
+                    it.tags.any { tag -> tag.name.contains(q, ignoreCase = true) }
+            }
+        }
+
+        base.sortedWith { a, b ->
+            val bookA = a.book
+            val bookB = b.book
+            val primary = when (sortMode) {
+                CollectionBookPickerSort.SELECTED_FIRST -> {
+                    val selA = bookA.id in selectedBookIds
+                    val selB = bookB.id in selectedBookIds
+                    if (selA != selB) {
+                        if (selA) -1 else 1
+                    } else {
+                        val raw = LocalizedNaturalComparator.compare(bookA.title, bookB.title)
+                        if (sortAscending) -raw else raw
+                    }
+                }
+                CollectionBookPickerSort.RECENT -> {
+                    val timeA = maxOf(bookA.lastReadAt, bookA.addedAt)
+                    val timeB = maxOf(bookB.lastReadAt, bookB.addedAt)
+                    val raw = timeA.compareTo(timeB)
+                    if (sortAscending) raw else -raw
+                }
+                CollectionBookPickerSort.TITLE -> {
+                    val raw = LocalizedNaturalComparator.compare(bookA.title, bookB.title)
+                    if (sortAscending) raw else -raw
+                }
+                CollectionBookPickerSort.PROGRESS -> {
+                    val raw = bookA.progressFraction.compareTo(bookB.progressFraction)
+                    if (sortAscending) raw else -raw
+                }
+            }
+            if (primary != 0) {
+                primary
+            } else {
+                val titleCmp = LocalizedNaturalComparator.compare(bookA.title, bookB.title)
+                if (titleCmp != 0) titleCmp else bookA.id.compareTo(bookB.id)
             }
         }
     }
@@ -860,7 +1012,7 @@ fun ManageCollectionBooksSheet(
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -909,9 +1061,77 @@ fun ManageCollectionBooksSheet(
             TonalSearchBar(
                 query = search,
                 onQueryChange = { search = it },
-                placeholder = "搜索要加入的书名或作者…",
+                placeholder = "搜索要加入的书名、作者或标签…",
                 modifier = Modifier.fillMaxWidth()
             )
+
+            // Sort Controls Row for the Book Picker Preview
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    onClick = { sortAscending = !sortAscending },
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier.testTag("collection_picker_sort_direction")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (sortAscending) Icons.Filled.ArrowUpward else Icons.Filled.ArrowDownward,
+                            contentDescription = if (sortAscending) "升序" else "降序",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = if (sortAscending) "升序" else "降序",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+
+                CollectionBookPickerSort.entries.forEach { option ->
+                    val selected = option == sortMode
+                    Surface(
+                        onClick = {
+                            if (selected) {
+                                sortAscending = !sortAscending
+                            } else {
+                                sortMode = option
+                                sortAscending = option.defaultAscending
+                            }
+                        },
+                        shape = CircleShape,
+                        color = if (selected) {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerLow
+                        },
+                        modifier = Modifier.testTag("collection_picker_sort_${option.name.lowercase()}")
+                    ) {
+                        Text(
+                            text = option.label,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                            ),
+                            color = if (selected) {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+            }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
 
@@ -932,7 +1152,7 @@ fun ManageCollectionBooksSheet(
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 380.dp),
+                        .heightIn(max = 360.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     items(filtered, key = { it.book.id }) { item ->
@@ -979,9 +1199,15 @@ fun ManageCollectionBooksSheet(
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
+                                    val statusText = when (book.readingStatus) {
+                                        ReadingStatus.COMPLETED -> "已读完"
+                                        ReadingStatus.UNREAD -> "未读"
+                                        ReadingStatus.READING -> "${book.progressPercent}%"
+                                    }
                                     val sub = buildString {
                                         append(book.format.badgeLabel)
                                         if (book.author.isNotBlank()) append(" · ${book.author}")
+                                        append(" · $statusText")
                                     }
                                     Text(
                                         text = sub,

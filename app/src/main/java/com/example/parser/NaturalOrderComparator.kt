@@ -3,6 +3,78 @@ package com.example.parser
 import com.example.data.local.entity.BookFormat
 import java.io.InputStream
 import java.security.MessageDigest
+import java.text.Collator
+import java.util.Locale
+
+object LocalizedNaturalComparator : Comparator<String> {
+    private val chinaCollator = ThreadLocal.withInitial {
+        Collator.getInstance(Locale.CHINA).apply {
+            strength = Collator.TERTIARY
+        }
+    }
+
+    override fun compare(a: String, b: String): Int {
+        val left = a.trim()
+        val right = b.trim()
+        if (left == right) return 0
+
+        val collator = chinaCollator.get() ?: Collator.getInstance(Locale.CHINA).apply {
+            strength = Collator.TERTIARY
+        }
+        var ia = 0
+        var ib = 0
+        val la = left.length
+        val lb = right.length
+
+        while (ia < la && ib < lb) {
+            val ca = left[ia]
+            val cb = right[ib]
+            if (ca.isDigit() && cb.isDigit()) {
+                var za = ia
+                while (za < la && left[za] == '0') za++
+                var zb = ib
+                while (zb < lb && right[zb] == '0') zb++
+
+                var ea = za
+                while (ea < la && left[ea].isDigit()) ea++
+                var eb = zb
+                while (eb < lb && right[eb].isDigit()) eb++
+
+                val lenA = ea - za
+                val lenB = eb - zb
+                if (lenA != lenB) return lenA.compareTo(lenB)
+
+                for (k in 0 until lenA) {
+                    val diff = left[za + k].compareTo(right[zb + k])
+                    if (diff != 0) return diff
+                }
+
+                val leadA = za - ia
+                val leadB = zb - ib
+                if (leadA != leadB) return leadA.compareTo(leadB)
+
+                ia = ea
+                ib = eb
+            } else if (ca.isDigit() != cb.isDigit()) {
+                return if (ca.isDigit()) -1 else 1
+            } else {
+                var ea = ia
+                while (ea < la && !left[ea].isDigit()) ea++
+                var eb = ib
+                while (eb < lb && !right[eb].isDigit()) eb++
+
+                val chunkA = left.substring(ia, ea)
+                val chunkB = right.substring(ib, eb)
+                val cmp = collator.compare(chunkA, chunkB)
+                if (cmp != 0) return cmp
+
+                ia = ea
+                ib = eb
+            }
+        }
+        return la.compareTo(lb)
+    }
+}
 
 object NaturalOrderComparator : Comparator<String> {
     override fun compare(a: String, b: String): Int {
