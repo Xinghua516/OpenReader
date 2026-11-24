@@ -1,5 +1,11 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -23,21 +29,26 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.LibraryBooks
@@ -46,6 +57,7 @@ import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.SortByAlpha
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -64,9 +76,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -79,6 +93,8 @@ import androidx.compose.ui.unit.dp
 import com.example.data.local.entity.BookEntity
 import com.example.data.local.entity.BookFormat
 import com.example.data.local.entity.BookWithTags
+import com.example.data.local.entity.CollectionEntity
+import com.example.data.local.entity.CollectionWithCount
 import com.example.data.local.entity.ReadingStatus
 import com.example.data.local.entity.TagWithCount
 import com.example.data.preferences.BookshelfSortOrder
@@ -101,6 +117,12 @@ fun BookshelfScreen(
     onOpenProfileOverview: () -> Unit,
     onUpdateBookMetadata: (Long, String, String, String) -> Unit,
     onToggleBookTag: (Long, Long, Boolean) -> Unit,
+    onToggleBookCollection: (Long, Long, Boolean) -> Unit,
+    onCreateCollection: (String, String, Long, Set<Long>) -> Unit,
+    onUpdateCollection: (CollectionEntity) -> Unit,
+    onDeleteCollection: (CollectionEntity) -> Unit,
+    onSetBooksInCollection: (Long, Set<Long>) -> Unit,
+    onAddBooksToCollection: (Long, String, Set<Long>) -> Unit,
     onSetBookStatus: (BookEntity, ReadingStatus) -> Unit,
     onToggleBookFavorite: (BookEntity) -> Unit,
     onDeleteBook: (BookEntity) -> Unit,
@@ -108,10 +130,36 @@ fun BookshelfScreen(
 ) {
     var sortMenuExpanded by remember { mutableStateOf(false) }
     var managingBook by remember { mutableStateOf<BookWithTags?>(null) }
+    var showCreateCollectionDialog by remember { mutableStateOf(false) }
+    var createCollectionInitialBookIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    var editingCollection by remember { mutableStateOf<CollectionEntity?>(null) }
+    var deletingCollection by remember { mutableStateOf<CollectionEntity?>(null) }
+    var managingBooksCollection by remember { mutableStateOf<CollectionEntity?>(null) }
+
+    var hasUserToggledCollections by rememberSaveable { mutableStateOf(false) }
+    var isCollectionsExpanded by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(uiState.collectionsWithCounts.size) {
+        if (!hasUserToggledCollections) {
+            isCollectionsExpanded = uiState.collectionsWithCounts.isNotEmpty()
+        }
+    }
+
+    var isMultiSelectMode by remember { mutableStateOf(false) }
+    var selectedBookIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    var showBatchCollectionPicker by remember { mutableStateOf(false) }
+
+    BackHandler(enabled = isMultiSelectMode) {
+        isMultiSelectMode = false
+        selectedBookIds = emptySet()
+    }
 
     // Keep managingBook synced with latest state
     val activeManagingBook = managingBook?.let { current ->
         uiState.allBooks.firstOrNull { it.book.id == current.book.id }
+    }
+    val activeCollectionFilter = uiState.activeFilter as? BookshelfFilter.ByCollection
+    val activeCollectionWithCount = activeCollectionFilter?.let { filter ->
+        uiState.collectionsWithCounts.firstOrNull { it.collection.id == filter.collectionId }
     }
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -121,7 +169,7 @@ fun BookshelfScreen(
                 onProfileClick = onOpenProfileOverview
             )
 
-            // Search + Layout Toggle + Sort Row
+            // Search + Multi-select + Layout Toggle + Sort Row
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -132,10 +180,42 @@ fun BookshelfScreen(
                 TonalSearchBar(
                     query = uiState.bookshelfSearchQuery,
                     onQueryChange = onSearchChange,
-                    placeholder = "搜索书名、作者或标签…",
+                    placeholder = "搜索书名、作者、合集或标签…",
                     modifier = Modifier.weight(1f),
                     testTag = "bookshelf_search_input"
                 )
+
+                if (uiState.allBooks.isNotEmpty()) {
+                    Surface(
+                        onClick = {
+                            val next = !isMultiSelectMode
+                            isMultiSelectMode = next
+                            if (!next) selectedBookIds = emptySet()
+                        },
+                        shape = CircleShape,
+                        color = if (isMultiSelectMode) {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainer
+                        },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .minimumInteractiveComponentSize()
+                            .testTag("bookshelf_multiselect_button")
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Outlined.Checklist,
+                                contentDescription = if (isMultiSelectMode) "退出多选整理" else "多选加入合集",
+                                tint = if (isMultiSelectMode) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
+                    }
+                }
 
                 Surface(
                     onClick = onToggleGridView,
@@ -262,59 +342,15 @@ fun BookshelfScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
-            // Simple inline Filtering & Sorting Bar (Recent / Alphabetical)
-            if (uiState.allBooks.isNotEmpty()) {
-                BookshelfQuickSortBar(
-                    totalCount = uiState.allBooks.size,
-                    filteredCount = uiState.filteredBooks.size,
-                    currentSort = uiState.preferences.sortOrder,
-                    onSelectSortOrder = onSelectSortOrder,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-            } else {
-                Spacer(modifier = Modifier.height(4.dp))
-            }
-
-            // Library Body
+            // Library Body — Collections & QuickSort scroll together inside the grid/list!
             if (uiState.allBooks.isEmpty()) {
                 EmptyBookshelfState(
                     onPickLocalFiles = onQuickImportFiles,
                     onGoImportCenter = onNavigateToImportCenter,
                     modifier = Modifier.fillMaxSize()
                 )
-            } else if (uiState.filteredBooks.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(32.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(
-                            imageVector = Icons.Outlined.LibraryBooks,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                            modifier = Modifier.size(48.dp)
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            text = "当前筛选下暂无书籍",
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        TextButton(onClick = {
-                            onSearchChange("")
-                            onSelectFilter(BookshelfFilter.All)
-                        }) {
-                            Text("重置筛选条件")
-                        }
-                    }
-                }
             } else if (uiState.preferences.isGridView) {
                 BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                     val adaptiveCellMinWidth = when {
@@ -328,20 +364,114 @@ fun BookshelfScreen(
                             start = 16.dp,
                             end = 16.dp,
                             top = 4.dp,
-                            bottom = 96.dp
+                            bottom = 104.dp
                         ),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
                         modifier = Modifier
                             .fillMaxSize()
                             .testTag("bookshelf_grid")
                     ) {
-                        items(uiState.filteredBooks, key = { it.book.id }) { item ->
-                            BookGridCard(
-                                item = item,
-                                onClick = { onOpenBook(item.book.id) },
-                                onLongClick = { managingBook = item }
+                        item(key = "collections_section", span = { GridItemSpan(maxLineSpan) }) {
+                            if (activeCollectionWithCount != null) {
+                                ActiveCollectionHeaderCard(
+                                    collectionWithCount = activeCollectionWithCount,
+                                    allCollections = uiState.collectionsWithCounts,
+                                    onSelectCollection = { col ->
+                                        onSelectFilter(BookshelfFilter.ByCollection(col.id, col.name))
+                                    },
+                                    onManageBooks = { managingBooksCollection = activeCollectionWithCount.collection },
+                                    onEditCollection = { editingCollection = activeCollectionWithCount.collection },
+                                    onDeleteCollection = { deletingCollection = activeCollectionWithCount.collection },
+                                    onExitCollection = { onSelectFilter(BookshelfFilter.All) }
+                                )
+                            } else {
+                                CollapsibleCollectionsSection(
+                                    collections = uiState.collectionsWithCounts,
+                                    allBooks = uiState.allBooks,
+                                    expanded = isCollectionsExpanded,
+                                    onToggleExpanded = {
+                                        hasUserToggledCollections = true
+                                        isCollectionsExpanded = !isCollectionsExpanded
+                                    },
+                                    onSelectCollection = { col ->
+                                        onSelectFilter(BookshelfFilter.ByCollection(col.id, col.name))
+                                    },
+                                    onCreateCollectionClick = {
+                                        createCollectionInitialBookIds = emptySet()
+                                        showCreateCollectionDialog = true
+                                    },
+                                    onManageBooksInCollection = { col ->
+                                        managingBooksCollection = col
+                                    },
+                                    onEditCollectionClick = { col ->
+                                        editingCollection = col
+                                    },
+                                    onDeleteCollectionClick = { col ->
+                                        deletingCollection = col
+                                    }
+                                )
+                            }
+                        }
+
+                        item(key = "quick_sort_bar", span = { GridItemSpan(maxLineSpan) }) {
+                            BookshelfQuickSortBar(
+                                totalCount = uiState.allBooks.size,
+                                filteredCount = uiState.filteredBooks.size,
+                                currentSort = uiState.preferences.sortOrder,
+                                onSelectSortOrder = onSelectSortOrder,
+                                modifier = Modifier.fillMaxWidth()
                             )
+                        }
+
+                        if (uiState.filteredBooks.isEmpty()) {
+                            item(key = "empty_filtered_state", span = { GridItemSpan(maxLineSpan) }) {
+                                if (activeCollectionWithCount != null) {
+                                    EmptyCollectionState(
+                                        collectionName = activeCollectionWithCount.collection.name,
+                                        onAddBooksClick = { managingBooksCollection = activeCollectionWithCount.collection },
+                                        onExitCollection = { onSelectFilter(BookshelfFilter.All) }
+                                    )
+                                } else {
+                                    EmptyFilteredBooksState(
+                                        onResetFilter = {
+                                            onSearchChange("")
+                                            onSelectFilter(BookshelfFilter.All)
+                                        }
+                                    )
+                                }
+                            }
+                        } else {
+                            items(uiState.filteredBooks, key = { it.book.id }) { item ->
+                                val selected = item.book.id in selectedBookIds
+                                BookGridCard(
+                                    item = item,
+                                    isMultiSelectMode = isMultiSelectMode,
+                                    isSelected = selected,
+                                    onClick = {
+                                        if (isMultiSelectMode) {
+                                            selectedBookIds = if (selected) {
+                                                selectedBookIds - item.book.id
+                                            } else {
+                                                selectedBookIds + item.book.id
+                                            }
+                                        } else {
+                                            onOpenBook(item.book.id)
+                                        }
+                                    },
+                                    onLongClick = {
+                                        if (isMultiSelectMode) {
+                                            selectedBookIds = if (selected) {
+                                                selectedBookIds - item.book.id
+                                            } else {
+                                                selectedBookIds + item.book.id
+                                            }
+                                        } else {
+                                            managingBook = item
+                                        }
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -351,41 +481,205 @@ fun BookshelfScreen(
                         start = 16.dp,
                         end = 16.dp,
                         top = 4.dp,
-                        bottom = 96.dp
+                        bottom = 104.dp
                     ),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    items(uiState.filteredBooks, key = { it.book.id }) { item ->
-                        BookListRowCard(
-                            item = item,
-                            onClick = { onOpenBook(item.book.id) },
-                            onMoreClick = { managingBook = item }
+                    item(key = "collections_section") {
+                        if (activeCollectionWithCount != null) {
+                            ActiveCollectionHeaderCard(
+                                collectionWithCount = activeCollectionWithCount,
+                                allCollections = uiState.collectionsWithCounts,
+                                onSelectCollection = { col ->
+                                    onSelectFilter(BookshelfFilter.ByCollection(col.id, col.name))
+                                },
+                                onManageBooks = { managingBooksCollection = activeCollectionWithCount.collection },
+                                onEditCollection = { editingCollection = activeCollectionWithCount.collection },
+                                onDeleteCollection = { deletingCollection = activeCollectionWithCount.collection },
+                                onExitCollection = { onSelectFilter(BookshelfFilter.All) }
+                            )
+                        } else {
+                            CollapsibleCollectionsSection(
+                                collections = uiState.collectionsWithCounts,
+                                allBooks = uiState.allBooks,
+                                expanded = isCollectionsExpanded,
+                                onToggleExpanded = {
+                                    hasUserToggledCollections = true
+                                    isCollectionsExpanded = !isCollectionsExpanded
+                                },
+                                onSelectCollection = { col ->
+                                    onSelectFilter(BookshelfFilter.ByCollection(col.id, col.name))
+                                },
+                                onCreateCollectionClick = {
+                                    createCollectionInitialBookIds = emptySet()
+                                    showCreateCollectionDialog = true
+                                },
+                                onManageBooksInCollection = { col ->
+                                    managingBooksCollection = col
+                                },
+                                onEditCollectionClick = { col ->
+                                    editingCollection = col
+                                },
+                                onDeleteCollectionClick = { col ->
+                                    deletingCollection = col
+                                }
+                            )
+                        }
+                    }
+
+                    item(key = "quick_sort_bar") {
+                        BookshelfQuickSortBar(
+                            totalCount = uiState.allBooks.size,
+                            filteredCount = uiState.filteredBooks.size,
+                            currentSort = uiState.preferences.sortOrder,
+                            onSelectSortOrder = onSelectSortOrder,
+                            modifier = Modifier.fillMaxWidth()
                         )
+                    }
+
+                    if (uiState.filteredBooks.isEmpty()) {
+                        item(key = "empty_filtered_state") {
+                            if (activeCollectionWithCount != null) {
+                                EmptyCollectionState(
+                                    collectionName = activeCollectionWithCount.collection.name,
+                                    onAddBooksClick = { managingBooksCollection = activeCollectionWithCount.collection },
+                                    onExitCollection = { onSelectFilter(BookshelfFilter.All) }
+                                )
+                            } else {
+                                EmptyFilteredBooksState(
+                                    onResetFilter = {
+                                        onSearchChange("")
+                                        onSelectFilter(BookshelfFilter.All)
+                                    }
+                                )
+                            }
+                        }
+                    } else {
+                        items(uiState.filteredBooks, key = { it.book.id }) { item ->
+                            val selected = item.book.id in selectedBookIds
+                            BookListRowCard(
+                                item = item,
+                                isMultiSelectMode = isMultiSelectMode,
+                                isSelected = selected,
+                                onClick = {
+                                    if (isMultiSelectMode) {
+                                        selectedBookIds = if (selected) {
+                                            selectedBookIds - item.book.id
+                                        } else {
+                                            selectedBookIds + item.book.id
+                                        }
+                                    } else {
+                                        onOpenBook(item.book.id)
+                                    }
+                                },
+                                onMoreClick = {
+                                    if (isMultiSelectMode) {
+                                        selectedBookIds = if (selected) {
+                                            selectedBookIds - item.book.id
+                                        } else {
+                                            selectedBookIds + item.book.id
+                                        }
+                                    } else {
+                                        managingBook = item
+                                    }
+                                }
+                            )
+                        }
                     }
                 }
             }
         }
 
-        // Extended FAB (+ 导入)
-        ExtendedFloatingActionButton(
-            onClick = onQuickImportFiles,
-            shape = RoundedCornerShape(16.dp),
-            containerColor = MaterialTheme.colorScheme.primary,
-            contentColor = MaterialTheme.colorScheme.onPrimary,
-            icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-            text = { Text("导入") },
+        // Extended FAB (+ 导入) when not in multi-select mode
+        AnimatedVisibility(
+            visible = !isMultiSelectMode,
+            enter = fadeIn(),
+            exit = fadeOut(),
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(16.dp)
-                .testTag("bookshelf_import_fab")
-        )
+        ) {
+            ExtendedFloatingActionButton(
+                onClick = onQuickImportFiles,
+                shape = RoundedCornerShape(16.dp),
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                text = { Text("导入") },
+                modifier = Modifier.testTag("bookshelf_import_fab")
+            )
+        }
+
+        // Multi-Select Contextual Batch Bar
+        AnimatedVisibility(
+            visible = isMultiSelectMode,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(horizontal = 16.dp, vertical = 14.dp)
+        ) {
+            val allFilteredIds = uiState.filteredBooks.map { it.book.id }.toSet()
+            val allSelected = allFilteredIds.isNotEmpty() && allFilteredIds.all { it in selectedBookIds }
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                tonalElevation = 6.dp,
+                shadowElevation = 6.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("bookshelf_multiselect_bar")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    IconButton(
+                        onClick = {
+                            isMultiSelectMode = false
+                            selectedBookIds = emptySet()
+                        },
+                        modifier = Modifier.minimumInteractiveComponentSize()
+                    ) {
+                        Icon(Icons.Filled.Close, contentDescription = "退出多选")
+                    }
+                    Text(
+                        text = "已选 ${selectedBookIds.size} 本",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = {
+                            selectedBookIds = if (allSelected) {
+                                selectedBookIds - allFilteredIds
+                            } else {
+                                selectedBookIds + allFilteredIds
+                            }
+                        }
+                    ) {
+                        Text(if (allSelected) "取消全选" else "全选")
+                    }
+                    Button(
+                        onClick = { showBatchCollectionPicker = true },
+                        enabled = selectedBookIds.isNotEmpty(),
+                        modifier = Modifier.testTag("batch_add_to_collection_button")
+                    ) {
+                        Text("加入合集")
+                    }
+                }
+            }
+        }
     }
 
     if (activeManagingBook != null) {
         BookActionsSheet(
             item = activeManagingBook,
             allTags = uiState.tagsWithCounts,
+            allCollections = uiState.collectionsWithCounts,
             onDismiss = { managingBook = null },
             onOpenBook = {
                 managingBook = null
@@ -396,6 +690,13 @@ fun BookshelfScreen(
             },
             onToggleTag = { tagId, assign ->
                 onToggleBookTag(activeManagingBook.book.id, tagId, assign)
+            },
+            onToggleCollection = { collectionId, assign ->
+                onToggleBookCollection(activeManagingBook.book.id, collectionId, assign)
+            },
+            onCreateCollectionForBook = {
+                createCollectionInitialBookIds = setOf(activeManagingBook.book.id)
+                showCreateCollectionDialog = true
             },
             onSetStatus = { status ->
                 onSetBookStatus(activeManagingBook.book, status)
@@ -408,6 +709,131 @@ fun BookshelfScreen(
                 onDeleteBook(activeManagingBook.book)
             }
         )
+    }
+
+    if (showBatchCollectionPicker) {
+        AddBooksToCollectionPickerSheet(
+            selectedCount = selectedBookIds.size,
+            collections = uiState.collectionsWithCounts,
+            onDismiss = { showBatchCollectionPicker = false },
+            onPickCollection = { collection ->
+                onAddBooksToCollection(collection.id, collection.name, selectedBookIds)
+                showBatchCollectionPicker = false
+                isMultiSelectMode = false
+                selectedBookIds = emptySet()
+            },
+            onCreateNewCollection = {
+                showBatchCollectionPicker = false
+                createCollectionInitialBookIds = selectedBookIds
+                showCreateCollectionDialog = true
+            }
+        )
+    }
+
+    if (showCreateCollectionDialog) {
+        CreateEditCollectionDialog(
+            existing = null,
+            onDismiss = {
+                showCreateCollectionDialog = false
+                createCollectionInitialBookIds = emptySet()
+            },
+            onSave = { name, desc, colorHex ->
+                onCreateCollection(name, desc, colorHex, createCollectionInitialBookIds)
+                hasUserToggledCollections = true
+                isCollectionsExpanded = true
+                showCreateCollectionDialog = false
+                if (createCollectionInitialBookIds.size > 1 || isMultiSelectMode) {
+                    isMultiSelectMode = false
+                    selectedBookIds = emptySet()
+                }
+                createCollectionInitialBookIds = emptySet()
+            }
+        )
+    }
+
+    val activeEditingCollection = editingCollection
+    if (activeEditingCollection != null) {
+        CreateEditCollectionDialog(
+            existing = activeEditingCollection,
+            onDismiss = { editingCollection = null },
+            onSave = { name, desc, colorHex ->
+                onUpdateCollection(
+                    activeEditingCollection.copy(
+                        name = name,
+                        description = desc,
+                        colorHex = colorHex
+                    )
+                )
+                editingCollection = null
+            },
+            onDelete = {
+                editingCollection = null
+                deletingCollection = activeEditingCollection
+            }
+        )
+    }
+
+    val activeDeletingCollection = deletingCollection
+    if (activeDeletingCollection != null) {
+        AlertDialog(
+            onDismissRequest = { deletingCollection = null },
+            title = { Text("删除合集文件夹") },
+            text = { Text("确定要删除合集「${activeDeletingCollection.name}」吗？其中的书籍与漫画不会被删除，仍保留在书架中。") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteCollection(activeDeletingCollection)
+                        deletingCollection = null
+                    }
+                ) {
+                    Text("确认删除")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletingCollection = null }) { Text("取消") }
+            }
+        )
+    }
+
+    val activeManagingBooksCollection = managingBooksCollection
+    if (activeManagingBooksCollection != null) {
+        ManageCollectionBooksSheet(
+            collection = activeManagingBooksCollection,
+            allBooks = uiState.allBooks,
+            onDismiss = { managingBooksCollection = null },
+            onSaveMembership = { bookIds ->
+                onSetBooksInCollection(activeManagingBooksCollection.id, bookIds)
+            }
+        )
+    }
+}
+
+@Composable
+private fun EmptyFilteredBooksState(
+    onResetFilter: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp, vertical = 48.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.LibraryBooks,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+            modifier = Modifier.size(48.dp)
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(
+            text = "当前筛选下暂无书籍",
+            style = MaterialTheme.typography.titleMedium
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        TextButton(onClick = onResetFilter) {
+            Text("重置筛选条件")
+        }
     }
 }
 
@@ -542,6 +968,8 @@ private fun ShelfFilterChip(
 @Composable
 private fun BookGridCard(
     item: BookWithTags,
+    isMultiSelectMode: Boolean,
+    isSelected: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
@@ -574,8 +1002,12 @@ private fun BookGridCard(
                 .aspectRatio(0.72f)
                 .clip(RoundedCornerShape(4.dp))
                 .border(
-                    width = 0.5.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                    width = if (isSelected) 2.dp else 0.5.dp,
+                    color = if (isSelected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    },
                     shape = RoundedCornerShape(4.dp)
                 )
         ) {
@@ -601,6 +1033,29 @@ private fun BookGridCard(
                     color = Color.White,
                     modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
                 )
+            }
+
+            if (isMultiSelectMode) {
+                Surface(
+                    shape = CircleShape,
+                    color = if (isSelected) MaterialTheme.colorScheme.primary else Color(0x881B1B1E),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                        .size(24.dp)
+                        .border(1.5.dp, Color.White, CircleShape)
+                ) {
+                    if (isSelected) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Filled.Check,
+                                contentDescription = "已选中",
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -683,16 +1138,27 @@ private fun BookGridCard(
 @Composable
 private fun BookListRowCard(
     item: BookWithTags,
+    isMultiSelectMode: Boolean,
+    isSelected: Boolean,
     onClick: () -> Unit,
     onMoreClick: () -> Unit
 ) {
     val book = item.book
     Surface(
         shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        color = if (isSelected) {
+            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        },
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
+            .then(
+                if (isSelected) {
+                    Modifier.border(1.2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp))
+                } else Modifier
+            )
             .combinedClickable(onClick = onClick, onLongClick = onMoreClick)
             .testTag("book_row_${book.id}")
     ) {
@@ -746,8 +1212,14 @@ private fun BookListRowCard(
                 val unitWord = if (book.format.isTextFlow) "章" else "页"
                 val metaLine = buildString {
                     if (book.author.isNotBlank()) append("${book.author} · ")
-                    append("${book.currentUnit + 1}/${book.totalUnits} $unitWord")
-                    append(" · ${book.readingStatus.displayName}")
+                    when (book.readingStatus) {
+                        ReadingStatus.UNREAD -> append("${book.totalUnits} $unitWord · 未读")
+                        ReadingStatus.COMPLETED -> append("${book.totalUnits} $unitWord · 已完结 · 100%")
+                        ReadingStatus.READING -> {
+                            append("${book.currentUnit + 1}/${book.totalUnits} $unitWord")
+                            append(" · 在读 ${book.progressPercent}%")
+                        }
+                    }
                 }
                 Text(
                     text = metaLine,
@@ -756,11 +1228,54 @@ private fun BookListRowCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                if (item.tags.isNotEmpty()) {
+                LinearProgressIndicator(
+                    progress = {
+                        when (book.readingStatus) {
+                            ReadingStatus.UNREAD -> 0f
+                            ReadingStatus.COMPLETED -> 1f
+                            ReadingStatus.READING -> book.progressFraction
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(2.dp)),
+                    color = if (book.readingStatus == ReadingStatus.COMPLETED) {
+                        MaterialTheme.colorScheme.tertiary
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
+                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+                )
+                if (item.collections.isNotEmpty() || item.tags.isNotEmpty()) {
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
+                        item.collections.take(2).forEach { col ->
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = Color(col.colorHex).copy(alpha = 0.14f)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Folder,
+                                        contentDescription = null,
+                                        tint = Color(col.colorHex),
+                                        modifier = Modifier.size(11.dp)
+                                    )
+                                    Text(
+                                        text = col.name,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color(col.colorHex)
+                                    )
+                                }
+                            }
+                        }
                         item.tags.take(3).forEach { tag ->
                             Surface(
                                 shape = CircleShape,
@@ -777,11 +1292,18 @@ private fun BookListRowCard(
                     }
                 }
             }
-            IconButton(onClick = onMoreClick) {
-                Icon(
-                    imageVector = Icons.Outlined.MoreVert,
-                    contentDescription = "书籍选项与标签管理"
+            if (isMultiSelectMode) {
+                Checkbox(
+                    checked = isSelected,
+                    onCheckedChange = { onClick() }
                 )
+            } else {
+                IconButton(onClick = onMoreClick) {
+                    Icon(
+                        imageVector = Icons.Outlined.MoreVert,
+                        contentDescription = "书籍选项与标签管理"
+                    )
+                }
             }
         }
     }
@@ -849,10 +1371,13 @@ private fun EmptyBookshelfState(
 private fun BookActionsSheet(
     item: BookWithTags,
     allTags: List<TagWithCount>,
+    allCollections: List<CollectionWithCount>,
     onDismiss: () -> Unit,
     onOpenBook: () -> Unit,
     onUpdateMetadata: (String, String, String) -> Unit,
     onToggleTag: (Long, Boolean) -> Unit,
+    onToggleCollection: (Long, Boolean) -> Unit,
+    onCreateCollectionForBook: () -> Unit,
     onSetStatus: (ReadingStatus) -> Unit,
     onToggleFavorite: () -> Unit,
     onDelete: () -> Unit
@@ -868,6 +1393,7 @@ private fun BookActionsSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -890,7 +1416,7 @@ private fun BookActionsSheet(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "${book.format.badgeLabel} · ${book.categoryGroup} · ${book.totalUnits} ${if (book.format == BookFormat.EPUB) "章" else "页"}",
+                        text = "${book.format.badgeLabel} · ${book.categoryGroup} · ${book.totalUnits} ${if (book.format.isTextFlow) "章" else "页"}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -928,6 +1454,43 @@ private fun BookActionsSheet(
             }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+            Text("所属合集文件夹", style = MaterialTheme.typography.titleSmall)
+            val assignedCollectionIds = item.collections.map { it.id }.toSet()
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                allCollections.forEach { colWithCount ->
+                    val col = colWithCount.collection
+                    val selected = col.id in assignedCollectionIds
+                    FilterChip(
+                        selected = selected,
+                        onClick = { onToggleCollection(col.id, !selected) },
+                        label = { Text(col.name) },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = if (selected) Icons.Filled.Check else Icons.Outlined.Folder,
+                                contentDescription = null,
+                                tint = if (selected) MaterialTheme.colorScheme.primary else Color(col.colorHex),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    )
+                }
+                FilterChip(
+                    selected = false,
+                    onClick = onCreateCollectionForBook,
+                    label = { Text("+ 新建合集") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Filled.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                )
+            }
 
             Text("阅读状态", style = MaterialTheme.typography.titleSmall)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

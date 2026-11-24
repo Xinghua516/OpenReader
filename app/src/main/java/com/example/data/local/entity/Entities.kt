@@ -65,8 +65,16 @@ data class BookEntity(
         get() = when {
             readingStatus == ReadingStatus.COMPLETED -> 1f
             totalUnits <= 0 -> 0f
-            currentUnit <= 0 && readingStatus == ReadingStatus.UNREAD -> 0f
-            else -> ((currentUnit + 1).toFloat() / totalUnits.toFloat()).coerceIn(0f, 1f)
+            readingStatus == ReadingStatus.UNREAD && currentUnit <= 0 && currentOffset <= 0 -> 0f
+            format.isTextFlow -> {
+                val safeUnit = currentUnit.coerceIn(0, totalUnits - 1)
+                val withinUnit = (currentOffset.coerceIn(0, 1000) / 1000f)
+                ((safeUnit.toFloat() + withinUnit) / totalUnits.toFloat()).coerceIn(0f, 1f)
+            }
+            else -> {
+                val safeUnit = currentUnit.coerceIn(0, totalUnits - 1)
+                ((safeUnit + 1).toFloat() / totalUnits.toFloat()).coerceIn(0f, 1f)
+            }
         }
 
     val progressPercent: Int
@@ -155,6 +163,48 @@ data class AuthorizedFolderEntity(
     val bookCount: Int = 0
 )
 
+@Entity(
+    tableName = "collections",
+    indices = [Index(value = ["name"], unique = true)]
+)
+data class CollectionEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    val description: String = "",
+    val colorHex: Long = 0xFF4F378A,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+@Entity(
+    tableName = "book_collection_cross_ref",
+    primaryKeys = ["bookId", "collectionId"],
+    foreignKeys = [
+        ForeignKey(
+            entity = BookEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["bookId"],
+            onDelete = ForeignKey.CASCADE
+        ),
+        ForeignKey(
+            entity = CollectionEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["collectionId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [Index(value = ["collectionId"]), Index(value = ["bookId"])]
+)
+data class BookCollectionCrossRef(
+    val bookId: Long,
+    val collectionId: Long,
+    val addedAt: Long = System.currentTimeMillis()
+)
+
+data class CollectionWithCount(
+    @Embedded val collection: CollectionEntity,
+    val bookCount: Int
+)
+
 data class BookWithTags(
     @Embedded val book: BookEntity,
     @Relation(
@@ -166,7 +216,17 @@ data class BookWithTags(
             entityColumn = "tagId"
         )
     )
-    val tags: List<TagEntity>
+    val tags: List<TagEntity>,
+    @Relation(
+        parentColumn = "id",
+        entityColumn = "id",
+        associateBy = Junction(
+            value = BookCollectionCrossRef::class,
+            parentColumn = "bookId",
+            entityColumn = "collectionId"
+        )
+    )
+    val collections: List<CollectionEntity> = emptyList()
 )
 
 data class TagWithCount(

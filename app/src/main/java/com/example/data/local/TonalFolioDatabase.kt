@@ -6,13 +6,16 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.data.local.dao.LibraryDao
 import com.example.data.local.entity.AuthorizedFolderEntity
+import com.example.data.local.entity.BookCollectionCrossRef
 import com.example.data.local.entity.BookEntity
 import com.example.data.local.entity.BookFormat
 import com.example.data.local.entity.BookTagCrossRef
 import com.example.data.local.entity.BookmarkEntity
+import com.example.data.local.entity.CollectionEntity
 import com.example.data.local.entity.ReadingStatus
 import com.example.data.local.entity.SmartRuleConditionType
 import com.example.data.local.entity.SmartRuleEntity
@@ -48,9 +51,11 @@ class TonalTypeConverters {
         BookTagCrossRef::class,
         BookmarkEntity::class,
         SmartRuleEntity::class,
-        AuthorizedFolderEntity::class
+        AuthorizedFolderEntity::class,
+        CollectionEntity::class,
+        BookCollectionCrossRef::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 @TypeConverters(TonalTypeConverters::class)
@@ -60,6 +65,43 @@ abstract class TonalFolioDatabase : RoomDatabase() {
     companion object {
         @Volatile
         private var INSTANCE: TonalFolioDatabase? = null
+
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `collections` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `description` TEXT NOT NULL,
+                        `colorHex` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_collections_name` ON `collections` (`name`)"
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `book_collection_cross_ref` (
+                        `bookId` INTEGER NOT NULL,
+                        `collectionId` INTEGER NOT NULL,
+                        `addedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`bookId`, `collectionId`),
+                        FOREIGN KEY(`bookId`) REFERENCES `books`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE,
+                        FOREIGN KEY(`collectionId`) REFERENCES `collections`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_book_collection_cross_ref_collectionId` ON `book_collection_cross_ref` (`collectionId`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_book_collection_cross_ref_bookId` ON `book_collection_cross_ref` (`bookId`)"
+                )
+            }
+        }
 
         fun getInstance(context: Context): TonalFolioDatabase {
             return INSTANCE ?: synchronized(this) {
@@ -73,14 +115,15 @@ abstract class TonalFolioDatabase : RoomDatabase() {
                 appContext,
                 TonalFolioDatabase::class.java,
                 "tonal_folio.db"
-            ).addCallback(object : Callback() {
-                override fun onCreate(supportDb: SupportSQLiteDatabase) {
-                    super.onCreate(supportDb)
-                    CoroutineScope(Dispatchers.IO).launch {
-                        seedInitialClassificationConfig(db.libraryDao())
+            ).addMigrations(MIGRATION_1_2)
+                .addCallback(object : Callback() {
+                    override fun onCreate(supportDb: SupportSQLiteDatabase) {
+                        super.onCreate(supportDb)
+                        CoroutineScope(Dispatchers.IO).launch {
+                            seedInitialClassificationConfig(db.libraryDao())
+                        }
                     }
-                }
-            }).build()
+                }).build()
             return db
         }
 

@@ -6,11 +6,14 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import com.example.data.local.dao.LibraryDao
 import com.example.data.local.entity.AuthorizedFolderEntity
+import com.example.data.local.entity.BookCollectionCrossRef
 import com.example.data.local.entity.BookEntity
 import com.example.data.local.entity.BookFormat
 import com.example.data.local.entity.BookTagCrossRef
 import com.example.data.local.entity.BookWithTags
 import com.example.data.local.entity.BookmarkEntity
+import com.example.data.local.entity.CollectionEntity
+import com.example.data.local.entity.CollectionWithCount
 import com.example.data.local.entity.ReadingStatus
 import com.example.data.local.entity.SmartRuleConditionType
 import com.example.data.local.entity.SmartRuleEntity
@@ -64,6 +67,7 @@ class LibraryRepository(
 
     val allBooksWithTags: Flow<List<BookWithTags>> = dao.observeAllBooksWithTags()
     val tagsWithCounts: Flow<List<TagWithCount>> = dao.observeTagsWithCounts()
+    val collectionsWithCounts: Flow<List<CollectionWithCount>> = dao.observeCollectionsWithCounts()
     val smartRules: Flow<List<SmartRuleEntity>> = dao.observeSmartRules()
     val authorizedFolders: Flow<List<AuthorizedFolderEntity>> = dao.observeAuthorizedFolders()
 
@@ -438,22 +442,52 @@ class LibraryRepository(
         bookId: Long,
         unitIndex: Int,
         offset: Int,
-        totalUnits: Int
+        totalUnits: Int,
+        isTextFlow: Boolean = false,
+        preserveCompleted: Boolean = false
     ) {
         val safeTotal = totalUnits.coerceAtLeast(1)
-        val clamped = unitIndex.coerceIn(0, safeTotal - 1)
+        val clampedUnit = unitIndex.coerceIn(0, safeTotal - 1)
+        val clampedOffset = offset.coerceIn(0, 1000)
+        val reachedEnd = if (isTextFlow) {
+            clampedUnit >= safeTotal - 1 && clampedOffset >= 960
+        } else {
+            clampedUnit >= safeTotal - 1 && (safeTotal > 1 || clampedOffset > 0 || preserveCompleted)
+        }
         val status = when {
-            clamped >= safeTotal - 1 && safeTotal > 1 -> ReadingStatus.COMPLETED
-            clamped > 0 || offset > 0 -> ReadingStatus.READING
+            reachedEnd -> ReadingStatus.COMPLETED
+            preserveCompleted && clampedUnit >= safeTotal - 1 -> ReadingStatus.COMPLETED
             else -> ReadingStatus.READING
         }
-        dao.updateReadingProgress(
-            bookId = bookId,
-            unit = clamped,
-            offset = offset,
-            status = status,
-            lastReadAt = System.currentTimeMillis()
-        )
+        kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+            dao.updateReadingProgress(
+                bookId = bookId,
+                unit = clampedUnit,
+                offset = clampedOffset,
+                status = status,
+                lastReadAt = System.currentTimeMillis()
+            )
+        }
+    }
+
+    fun persistReadingProgressAsync(
+        bookId: Long,
+        unitIndex: Int,
+        offset: Int,
+        totalUnits: Int,
+        isTextFlow: Boolean,
+        preserveCompleted: Boolean = false
+    ) {
+        scope.launch {
+            updateReadingProgress(
+                bookId = bookId,
+                unitIndex = unitIndex,
+                offset = offset,
+                totalUnits = totalUnits,
+                isTextFlow = isTextFlow,
+                preserveCompleted = preserveCompleted
+            )
+        }
     }
 
     suspend fun setBookReadingStatus(book: BookEntity, status: ReadingStatus) {
@@ -556,5 +590,64 @@ class LibraryRepository(
 
     suspend fun deleteBookmark(bookmarkId: Long) {
         dao.deleteBookmarkById(bookmarkId)
+    }
+
+    // Collections (custom named folders)
+    suspend fun createCollection(
+        name: String,
+        description: String = "",
+        colorHex: Long = TagPresetColors.first()
+    ): Long {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return -1L
+        val existing = dao.findCollectionByName(trimmed)
+        if (existing != null) return -1L
+        return dao.insertCollection(
+            CollectionEntity(
+                name = trimmed,
+                description = description.trim(),
+                colorHex = colorHex
+            )
+        )
+    }
+
+    suspend fun updateCollection(collection: CollectionEntity): Boolean {
+        val trimmed = collection.name.trim()
+        if (trimmed.isEmpty()) return false
+        val conflict = dao.findCollectionByName(trimmed)
+        if (conflict != null && conflict.id != collection.id) return false
+        dao.updateCollection(
+            collection.copy(
+                name = trimmed,
+                description = collection.description.trim()
+            )
+        )
+        return true
+    }
+
+    suspend fun deleteCollection(collectionId: Long) {
+        dao.deleteCollectionById(collectionId)
+    }
+
+    suspend fun toggleBookInCollection(bookId: Long, collectionId: Long, assign: Boolean) {
+        if (assign) {
+            dao.insertBookCollectionCrossRef(
+                BookCollectionCrossRef(bookId = bookId, collectionId = collectionId)
+            )
+        } else {
+            dao.deleteBookCollectionCrossRef(bookId = bookId, collectionId = collectionId)
+        }
+    }
+
+    suspend fun setBooksInCollection(collectionId: Long, bookIds: Set<Long>) {
+        dao.setBooksInCollection(collectionId = collectionId, bookIds = bookIds)
+    }
+
+    suspend fun addBooksToCollection(collectionId: Long, bookIds: Set<Long>) {
+        bookIds.forEach { bookId ->
+            dao.insertBookCollectionCrossRef(
+                BookCollectionCrossRef(bookId = bookId, collectionId = collectionId)
+            )
+        }
     }
 }

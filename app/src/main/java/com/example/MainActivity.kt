@@ -322,6 +322,12 @@ private fun TonalFolioRoot(
                                 },
                                 onUpdateBookMetadata = libraryViewModel::updateBookMetadata,
                                 onToggleBookTag = libraryViewModel::toggleBookTag,
+                                onToggleBookCollection = libraryViewModel::toggleBookCollection,
+                                onCreateCollection = libraryViewModel::createCollection,
+                                onUpdateCollection = libraryViewModel::updateCollection,
+                                onDeleteCollection = libraryViewModel::deleteCollection,
+                                onSetBooksInCollection = libraryViewModel::setBooksInCollection,
+                                onAddBooksToCollection = libraryViewModel::addBooksToCollection,
                                 onSetBookStatus = libraryViewModel::setBookStatus,
                                 onToggleBookFavorite = libraryViewModel::toggleBookFavorite,
                                 onDeleteBook = libraryViewModel::deleteBook

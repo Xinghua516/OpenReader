@@ -121,7 +121,9 @@ import com.example.ui.viewmodel.ReaderDisplayMode
 import com.example.ui.viewmodel.ReaderUiState
 import com.example.ui.viewmodel.ReaderViewModel
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 @Composable
 fun ReaderScreen(
@@ -131,6 +133,12 @@ fun ReaderScreen(
 ) {
     LaunchedEffect(bookId) {
         viewModel.openBook(bookId)
+    }
+
+    DisposableEffect(bookId) {
+        onDispose {
+            viewModel.flushPendingProgress()
+        }
     }
 
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -228,10 +236,13 @@ fun ReaderScreen(
                 ComicReaderCanvas(
                     pages = state.comicPages,
                     currentPage = state.currentComicPage,
+                    scrollSyncToken = state.comicScrollSyncToken,
                     direction = prefs.comicReadingDirection,
                     trimWhiteMargins = prefs.trimWhiteMargins,
                     loadBitmap = { path -> viewModel.loadPageBitmap(path, prefs.trimWhiteMargins) },
-                    onPageChanged = { viewModel.onComicPageChanged(it) },
+                    onPageChanged = { page, fromUserScroll ->
+                        viewModel.onComicPageChanged(page, fromUserScroll = fromUserScroll)
+                    },
                     onToggleHud = { showHud = !showHud },
                     modifier = Modifier.fillMaxSize()
                 )
@@ -243,6 +254,9 @@ fun ReaderScreen(
                     prefs = prefs,
                     loadBitmap = { path -> viewModel.loadPageBitmap(path, trimWhiteMargins = false) },
                     onSelectChapter = { viewModel.selectEpubChapter(it) },
+                    onScrollProgressChanged = { permille ->
+                        viewModel.onChapterScrollProgressChanged(permille)
+                    },
                     onToggleHud = { showHud = !showHud },
                     modifier = Modifier.fillMaxSize()
                 )
@@ -258,7 +272,7 @@ fun ReaderScreen(
             )
         }
 
-        // Page counter pill at bottom-right when HUD hidden in comic mode
+        // Page counter pill at bottom-right when HUD hidden
         if (!showHud && !state.isLoading && state.errorMessage == null) {
             val total = if (state.displayMode == ReaderDisplayMode.COMIC) {
                 state.comicPages.size.coerceAtLeast(1)
@@ -279,7 +293,7 @@ fun ReaderScreen(
                     .padding(16.dp)
             ) {
                 Text(
-                    text = "$current / $total",
+                    text = "$current / $total · ${state.overallProgressPercent}%",
                     style = MaterialTheme.typography.labelSmall,
                     color = Color.White,
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
@@ -463,18 +477,26 @@ fun ReaderScreen(
                     }
 
                     // Scrubber Row
+                    val isSingleChapterText = !isComicMode && totalUnits == 1
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "阅读进度",
+                            text = "阅读进度 · ${state.overallProgressPercent}%",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        val locationText = if (isComicMode) {
+                            "第 ${currentUnit + 1} / $totalUnits 页"
+                        } else if (totalUnits == 1) {
+                            "正文 · 本章 ${(state.currentChapterOffsetPermille / 10)}%"
+                        } else {
+                            "第 ${currentUnit + 1} / $totalUnits 章 (本章 ${(state.currentChapterOffsetPermille / 10)}%)"
+                        }
                         Text(
-                            text = "第 ${currentUnit + 1} / $totalUnits $unitSuffix",
+                            text = locationText,
                             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
                             color = MaterialTheme.colorScheme.primary
                         )
@@ -496,21 +518,36 @@ fun ReaderScreen(
                             Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "上一$unitSuffix")
                         }
 
-                        var sliderValue by remember(currentUnit, totalUnits) {
-                            mutableFloatStateOf(currentUnit.toFloat())
+                        if (isSingleChapterText) {
+                            var offsetSliderValue by remember(state.currentChapterOffsetPermille) {
+                                mutableFloatStateOf(state.currentChapterOffsetPermille.toFloat())
+                            }
+                            Slider(
+                                value = offsetSliderValue,
+                                onValueChange = { offsetSliderValue = it },
+                                onValueChangeFinished = {
+                                    viewModel.scrubSingleChapterToPermille(offsetSliderValue.roundToInt())
+                                },
+                                valueRange = 0f..1000f,
+                                modifier = Modifier.weight(1f)
+                            )
+                        } else {
+                            var sliderValue by remember(currentUnit, totalUnits) {
+                                mutableFloatStateOf(currentUnit.toFloat())
+                            }
+                            Slider(
+                                value = sliderValue,
+                                onValueChange = { sliderValue = it },
+                                onValueChangeFinished = {
+                                    val target = sliderValue.roundToInt().coerceIn(0, totalUnits - 1)
+                                    if (isComicMode) viewModel.onComicPageChanged(target)
+                                    else viewModel.selectEpubChapter(target)
+                                },
+                                valueRange = 0f..(totalUnits - 1).coerceAtLeast(1).toFloat(),
+                                enabled = totalUnits > 1,
+                                modifier = Modifier.weight(1f)
+                            )
                         }
-                        Slider(
-                            value = sliderValue,
-                            onValueChange = { sliderValue = it },
-                            onValueChangeFinished = {
-                                val target = sliderValue.toInt().coerceIn(0, totalUnits - 1)
-                                if (isComicMode) viewModel.onComicPageChanged(target)
-                                else viewModel.selectEpubChapter(target)
-                            },
-                            valueRange = 0f..(totalUnits - 1).coerceAtLeast(1).toFloat(),
-                            enabled = totalUnits > 1,
-                            modifier = Modifier.weight(1f)
-                        )
 
                         IconButton(
                             onClick = {
@@ -638,10 +675,11 @@ fun ReaderScreen(
 private fun ComicReaderCanvas(
     pages: List<String>,
     currentPage: Int,
+    scrollSyncToken: Int,
     direction: ComicReadingDirection,
     trimWhiteMargins: Boolean,
     loadBitmap: suspend (String) -> Bitmap?,
-    onPageChanged: (Int) -> Unit,
+    onPageChanged: (Int, Boolean) -> Unit,
     onToggleHud: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -654,12 +692,40 @@ private fun ComicReaderCanvas(
 
     if (direction == ComicReadingDirection.WEBTOON_VERTICAL) {
         val listState = rememberLazyListState(initialFirstVisibleItemIndex = currentPage.coerceIn(0, pages.lastIndex))
-        LaunchedEffect(listState) {
-            snapshotFlow { listState.firstVisibleItemIndex }
+        var isProgrammaticScroll by remember { mutableStateOf(false) }
+
+        LaunchedEffect(scrollSyncToken) {
+            if (currentPage in pages.indices && (scrollSyncToken > 1 || listState.firstVisibleItemIndex != currentPage)) {
+                isProgrammaticScroll = true
+                runCatching { listState.scrollToItem(currentPage) }
+                isProgrammaticScroll = false
+            }
+        }
+
+        LaunchedEffect(listState, pages.size) {
+            snapshotFlow {
+                val layoutInfo = listState.layoutInfo
+                val visible = layoutInfo.visibleItemsInfo
+                when {
+                    visible.isEmpty() -> listState.firstVisibleItemIndex
+                    !listState.canScrollForward -> visible.last().index
+                    !listState.canScrollBackward -> 0
+                    else -> {
+                        val centerY = (layoutInfo.viewportStartOffset + layoutInfo.viewportEndOffset) / 2
+                        visible.firstOrNull { centerY in it.offset..(it.offset + it.size) }?.index
+                            ?: listState.firstVisibleItemIndex
+                    }
+                }
+            }
                 .distinctUntilChanged()
-                .collect { idx -> onPageChanged(idx) }
+                .collect { idx ->
+                    if (!isProgrammaticScroll) {
+                        onPageChanged(idx, true)
+                    }
+                }
         }
         LazyColumn(
+            state = listState,
             modifier = modifier
                 .fillMaxSize()
                 .clickable(
@@ -686,7 +752,7 @@ private fun ComicReaderCanvas(
             initialPage = currentPage.coerceIn(0, pages.lastIndex),
             pageCount = { pages.size }
         )
-        LaunchedEffect(currentPage) {
+        LaunchedEffect(currentPage, scrollSyncToken) {
             if (pagerState.currentPage != currentPage && currentPage in pages.indices) {
                 pagerState.scrollToPage(currentPage)
             }
@@ -694,7 +760,7 @@ private fun ComicReaderCanvas(
         LaunchedEffect(pagerState) {
             snapshotFlow { pagerState.currentPage }
                 .distinctUntilChanged()
-                .collect { page -> onPageChanged(page) }
+                .collect { page -> onPageChanged(page, true) }
         }
         val scope = rememberCoroutineScope()
         HorizontalPager(
@@ -826,6 +892,7 @@ private fun EpubReaderCanvas(
     prefs: AppPreferences,
     loadBitmap: suspend (String) -> Bitmap?,
     onSelectChapter: (Int) -> Unit,
+    onScrollProgressChanged: (Int) -> Unit,
     onToggleHud: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -845,7 +912,60 @@ private fun EpubReaderCanvas(
         return
     }
 
+    val listState = rememberLazyListState()
+    var restoredToken by remember { mutableStateOf(-1) }
+
+    LaunchedEffect(state.currentChapterIndex, state.chapterScrollRestoreToken, state.currentChapterBlocks) {
+        val targetToken = state.chapterScrollRestoreToken
+        val totalItems = snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
+        val targetPermille = state.currentChapterOffsetPermille.coerceIn(0, 1000)
+        if (targetPermille > 0 && totalItems > 1) {
+            val visibleSpan = listState.layoutInfo.visibleItemsInfo.size.coerceAtLeast(1)
+            val maxScrollIdx = (totalItems - visibleSpan).coerceAtLeast(1)
+            val targetIdx = ((targetPermille / 1000f) * maxScrollIdx).roundToInt().coerceIn(0, totalItems - 1)
+            listState.scrollToItem(targetIdx)
+        } else {
+            listState.scrollToItem(0)
+        }
+        restoredToken = targetToken
+    }
+
+    LaunchedEffect(listState, state.currentChapterIndex, state.chapterScrollRestoreToken) {
+        snapshotFlow {
+            if (restoredToken != state.chapterScrollRestoreToken) {
+                return@snapshotFlow -1
+            }
+            val layoutInfo = listState.layoutInfo
+            val visible = layoutInfo.visibleItemsInfo
+            val totalItems = layoutInfo.totalItemsCount
+            if (totalItems <= 0 || visible.isEmpty()) {
+                return@snapshotFlow -1
+            }
+            if (!listState.canScrollForward) {
+                return@snapshotFlow 1000
+            }
+            if (!listState.canScrollBackward) {
+                return@snapshotFlow 0
+            }
+            val first = visible.first()
+            val last = visible.last()
+            val topIndexFraction = first.index + (-first.offset.toFloat() / first.size.coerceAtLeast(1))
+            val bottomIntoLast = (layoutInfo.viewportEndOffset - last.offset).coerceIn(0, last.size)
+            val bottomIndexFraction = last.index + (bottomIntoLast.toFloat() / last.size.coerceAtLeast(1))
+            val viewportSpan = (bottomIndexFraction - topIndexFraction).coerceAtLeast(0.5f)
+            val totalScrollable = (totalItems - viewportSpan).coerceAtLeast(0.5f)
+            ((topIndexFraction / totalScrollable).coerceIn(0f, 1f) * 1000f).roundToInt()
+        }
+            .distinctUntilChanged()
+            .collect { permille ->
+                if (permille >= 0) {
+                    onScrollProgressChanged(permille)
+                }
+            }
+    }
+
     LazyColumn(
+        state = listState,
         contentPadding = PaddingValues(
             start = 22.dp,
             end = 22.dp,

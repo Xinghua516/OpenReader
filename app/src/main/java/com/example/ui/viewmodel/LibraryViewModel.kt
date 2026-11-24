@@ -9,6 +9,8 @@ import com.example.data.local.entity.AuthorizedFolderEntity
 import com.example.data.local.entity.BookEntity
 import com.example.data.local.entity.BookFormat
 import com.example.data.local.entity.BookWithTags
+import com.example.data.local.entity.CollectionEntity
+import com.example.data.local.entity.CollectionWithCount
 import com.example.data.local.entity.ReadingStatus
 import com.example.data.local.entity.SmartRuleConditionType
 import com.example.data.local.entity.SmartRuleEntity
@@ -40,6 +42,7 @@ sealed interface BookshelfFilter {
     data object Completed : BookshelfFilter
     data class ByTag(val tagId: Long, val tagName: String) : BookshelfFilter
     data class ByCategory(val category: String) : BookshelfFilter
+    data class ByCollection(val collectionId: Long, val collectionName: String) : BookshelfFilter
 }
 
 data class LibraryUiState(
@@ -48,6 +51,7 @@ data class LibraryUiState(
     val availableCategories: List<String> = emptyList(),
     val tagsWithCounts: List<TagWithCount> = emptyList(),
     val filteredTagGroups: Map<String, List<TagWithCount>> = emptyMap(),
+    val collectionsWithCounts: List<CollectionWithCount> = emptyList(),
     val smartRules: List<SmartRuleEntity> = emptyList(),
     val authorizedFolders: List<AuthorizedFolderEntity> = emptyList(),
     val importTasks: List<ImportTask> = emptyList(),
@@ -103,7 +107,9 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         repo.authorizedFolders,
         repo.importTasks
     ) { books, tags, rules, folders, tasks ->
-        RepoSnapshot(books, tags, rules, folders, tasks)
+        RepoSnapshot(books, tags, emptyList(), rules, folders, tasks)
+    }.combine(repo.collectionsWithCounts) { snapshot, collections ->
+        snapshot.copy(collections = collections)
     }
 
     val uiState: StateFlow<LibraryUiState> = combine(
@@ -140,6 +146,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             availableCategories = categories,
             tagsWithCounts = snapshot.tags,
             filteredTagGroups = groupedTags,
+            collectionsWithCounts = snapshot.collections,
             smartRules = snapshot.rules,
             authorizedFolders = snapshot.folders,
             importTasks = snapshot.tasks,
@@ -174,6 +181,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                 BookshelfFilter.Completed -> book.readingStatus == ReadingStatus.COMPLETED
                 is BookshelfFilter.ByTag -> item.tags.any { it.id == filter.tagId }
                 is BookshelfFilter.ByCategory -> book.categoryGroup == filter.category
+                is BookshelfFilter.ByCollection -> item.collections.any { it.id == filter.collectionId }
             }
         }
 
@@ -185,7 +193,8 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                 item.book.title.contains(q, ignoreCase = true) ||
                     item.book.author.contains(q, ignoreCase = true) ||
                     item.book.categoryGroup.contains(q, ignoreCase = true) ||
-                    item.tags.any { it.name.contains(q, ignoreCase = true) }
+                    item.tags.any { it.name.contains(q, ignoreCase = true) } ||
+                    item.collections.any { it.name.contains(q, ignoreCase = true) }
             }
         }
 
@@ -427,9 +436,79 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    // Collections (custom named folders)
+    fun createCollection(
+        name: String,
+        description: String,
+        colorHex: Long,
+        initialBookIds: Set<Long> = emptySet()
+    ) {
+        viewModelScope.launch {
+            val newId = repo.createCollection(name, description, colorHex)
+            if (newId > 0L) {
+                if (initialBookIds.isNotEmpty()) {
+                    repo.addBooksToCollection(newId, initialBookIds)
+                    _toastEvents.tryEmit("已创建合集「${name.trim()}」并加入 ${initialBookIds.size} 本书籍")
+                } else {
+                    _toastEvents.tryEmit("已创建合集「${name.trim()}」")
+                }
+            } else {
+                _toastEvents.tryEmit("合集名称已存在或无效")
+            }
+        }
+    }
+
+    fun updateCollection(collection: CollectionEntity) {
+        viewModelScope.launch {
+            val updated = repo.updateCollection(collection)
+            if (updated) {
+                val current = activeFilter.value
+                if (current is BookshelfFilter.ByCollection && current.collectionId == collection.id) {
+                    activeFilter.value = BookshelfFilter.ByCollection(collection.id, collection.name.trim())
+                }
+                _toastEvents.tryEmit("已更新合集「${collection.name.trim()}」")
+            } else {
+                _toastEvents.tryEmit("合集名称已存在或无效")
+            }
+        }
+    }
+
+    fun deleteCollection(collection: CollectionEntity) {
+        viewModelScope.launch {
+            repo.deleteCollection(collection.id)
+            val current = activeFilter.value
+            if (current is BookshelfFilter.ByCollection && current.collectionId == collection.id) {
+                activeFilter.value = BookshelfFilter.All
+            }
+            _toastEvents.tryEmit("已删除合集「${collection.name}」（书籍保留在书架中）")
+        }
+    }
+
+    fun toggleBookCollection(bookId: Long, collectionId: Long, assign: Boolean) {
+        viewModelScope.launch {
+            repo.toggleBookInCollection(bookId, collectionId, assign)
+        }
+    }
+
+    fun setBooksInCollection(collectionId: Long, bookIds: Set<Long>) {
+        viewModelScope.launch {
+            repo.setBooksInCollection(collectionId, bookIds)
+            _toastEvents.tryEmit("已更新合集书籍列表")
+        }
+    }
+
+    fun addBooksToCollection(collectionId: Long, collectionName: String, bookIds: Set<Long>) {
+        if (bookIds.isEmpty()) return
+        viewModelScope.launch {
+            repo.addBooksToCollection(collectionId, bookIds)
+            _toastEvents.tryEmit("已将 ${bookIds.size} 本书籍加入「$collectionName」")
+        }
+    }
+
     private data class RepoSnapshot(
         val books: List<BookWithTags>,
         val tags: List<TagWithCount>,
+        val collections: List<CollectionWithCount>,
         val rules: List<SmartRuleEntity>,
         val folders: List<AuthorizedFolderEntity>,
         val tasks: List<ImportTask>

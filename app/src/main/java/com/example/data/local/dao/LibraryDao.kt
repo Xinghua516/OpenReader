@@ -163,4 +163,64 @@ interface LibraryDao {
 
     @Query("DELETE FROM authorized_folders WHERE uri = :uri")
     suspend fun deleteAuthorizedFolderByUri(uri: String)
+
+    // Collections (custom named folders)
+    @Query(
+        """
+        SELECT collections.*, COUNT(book_collection_cross_ref.bookId) AS bookCount
+        FROM collections
+        LEFT JOIN book_collection_cross_ref ON collections.id = book_collection_cross_ref.collectionId
+        GROUP BY collections.id
+        ORDER BY collections.createdAt DESC, collections.name ASC
+        """
+    )
+    fun observeCollectionsWithCounts(): Flow<List<com.example.data.local.entity.CollectionWithCount>>
+
+    @Query("SELECT * FROM collections ORDER BY createdAt DESC, name ASC")
+    suspend fun getAllCollectionsOnce(): List<com.example.data.local.entity.CollectionEntity>
+
+    @Query("SELECT * FROM collections WHERE name = :name LIMIT 1")
+    suspend fun findCollectionByName(name: String): com.example.data.local.entity.CollectionEntity?
+
+    @Query("SELECT * FROM collections WHERE id = :collectionId LIMIT 1")
+    suspend fun findCollectionById(collectionId: Long): com.example.data.local.entity.CollectionEntity?
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertCollection(collection: com.example.data.local.entity.CollectionEntity): Long
+
+    @Update
+    suspend fun updateCollection(collection: com.example.data.local.entity.CollectionEntity)
+
+    @Query("DELETE FROM collections WHERE id = :collectionId")
+    suspend fun deleteCollectionById(collectionId: Long)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertBookCollectionCrossRef(crossRef: com.example.data.local.entity.BookCollectionCrossRef)
+
+    @Query("DELETE FROM book_collection_cross_ref WHERE bookId = :bookId AND collectionId = :collectionId")
+    suspend fun deleteBookCollectionCrossRef(bookId: Long, collectionId: Long)
+
+    @Query("SELECT bookId FROM book_collection_cross_ref WHERE collectionId = :collectionId")
+    suspend fun getBookIdsInCollection(collectionId: Long): List<Long>
+
+    @Query("DELETE FROM book_collection_cross_ref WHERE collectionId = :collectionId")
+    suspend fun clearCollectionBooks(collectionId: Long)
+
+    @Transaction
+    suspend fun setBooksInCollection(collectionId: Long, bookIds: Set<Long>) {
+        val current = getBookIdsInCollection(collectionId).toSet()
+        val toRemove = current - bookIds
+        val toAdd = bookIds - current
+        toRemove.forEach { bookId ->
+            deleteBookCollectionCrossRef(bookId = bookId, collectionId = collectionId)
+        }
+        toAdd.forEach { bookId ->
+            insertBookCollectionCrossRef(
+                com.example.data.local.entity.BookCollectionCrossRef(
+                    bookId = bookId,
+                    collectionId = collectionId
+                )
+            )
+        }
+    }
 }

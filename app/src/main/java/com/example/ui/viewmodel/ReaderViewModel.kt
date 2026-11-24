@@ -9,6 +9,7 @@ import com.example.TonalFolioApp
 import com.example.data.local.entity.BookEntity
 import com.example.data.local.entity.BookFormat
 import com.example.data.local.entity.BookmarkEntity
+import com.example.data.local.entity.ReadingStatus
 import com.example.data.preferences.AppPreferences
 import com.example.data.preferences.ComicReadingDirection
 import com.example.data.preferences.EpubReaderTheme
@@ -22,6 +23,7 @@ import com.example.parser.PdfSession
 import com.example.parser.TextAndMarkdownParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -46,12 +48,27 @@ data class ReaderUiState(
     val displayMode: ReaderDisplayMode = ReaderDisplayMode.COMIC,
     val comicPages: List<String> = emptyList(),
     val currentComicPage: Int = 0,
+    val comicScrollSyncToken: Int = 0,
     val epubStructure: EpubBookStructure? = null,
     val currentChapterIndex: Int = 0,
+    val currentChapterOffsetPermille: Int = 0,
+    val chapterScrollRestoreToken: Int = 0,
     val currentChapterBlocks: List<EpubContentBlock> = emptyList(),
     val isChapterLoading: Boolean = false,
     val bookmarks: List<BookmarkEntity> = emptyList()
-)
+) {
+    val overallProgressPercent: Int
+        get() = if (displayMode == ReaderDisplayMode.EPUB_TYPOGRAPHY) {
+            val total = (epubStructure?.chapters?.size ?: book?.totalUnits ?: 1).coerceAtLeast(1)
+            val safeChapter = currentChapterIndex.coerceIn(0, total - 1)
+            val within = currentChapterOffsetPermille.coerceIn(0, 1000) / 1000f
+            (((safeChapter.toFloat() + within) / total.toFloat()) * 100f).toInt().coerceIn(0, 100)
+        } else {
+            val total = comicPages.size.coerceAtLeast(book?.totalUnits ?: 1).coerceAtLeast(1)
+            val safePage = currentComicPage.coerceIn(0, total - 1)
+            (((safePage + 1).toFloat() / total.toFloat()) * 100f).toInt().coerceIn(0, 100)
+        }
+}
 
 class ReaderViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as TonalFolioApp
@@ -73,6 +90,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     private var activeTextChapters: List<ParsedTextChapter> = emptyList()
     private var currentBookId: Long = -1L
     private var bookmarksJob: Job? = null
+    private var scrollSaveJob: Job? = null
 
     private val bitmapCache = object : LruCache<String, Bitmap>(24 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
@@ -125,18 +143,32 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                         }
                         val pageKeys = List(count) { "pdf_page_$it" }
                         val safePage = book.currentUnit.coerceIn(0, count - 1)
+                        val preserveCompleted = book.readingStatus == ReadingStatus.COMPLETED
                         _uiState.update {
                             it.copy(
                                 isLoading = false,
-                                book = book,
+                                book = book.copy(
+                                    currentUnit = safePage,
+                                    readingStatus = if (preserveCompleted) ReadingStatus.COMPLETED else ReadingStatus.READING
+                                ),
                                 displayMode = ReaderDisplayMode.COMIC,
                                 comicPages = pageKeys,
                                 currentComicPage = safePage,
+                                comicScrollSyncToken = it.comicScrollSyncToken + 1,
                                 epubStructure = null,
                                 currentChapterIndex = 0,
+                                currentChapterOffsetPermille = 0,
                                 currentChapterBlocks = emptyList()
                             )
                         }
+                        repo.persistReadingProgressAsync(
+                            bookId = book.id,
+                            unitIndex = safePage,
+                            offset = 0,
+                            totalUnits = count,
+                            isTextFlow = false,
+                            preserveCompleted = preserveCompleted
+                        )
                     }
 
                     BookFormat.TXT, BookFormat.MD -> {
@@ -172,19 +204,35 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                             chapters = epubChapters
                         )
                         val safeChapter = book.currentUnit.coerceIn(0, (chapters.size - 1).coerceAtLeast(0))
+                        val restoredOffset = book.currentOffset.coerceIn(0, 1000)
                         val blocks = chapters.getOrNull(safeChapter)?.blocks.orEmpty()
+                        val preserveCompleted = book.readingStatus == ReadingStatus.COMPLETED
                         _uiState.update {
                             it.copy(
                                 isLoading = false,
-                                book = book,
+                                book = book.copy(
+                                    currentUnit = safeChapter,
+                                    currentOffset = restoredOffset,
+                                    readingStatus = if (preserveCompleted) ReadingStatus.COMPLETED else ReadingStatus.READING
+                                ),
                                 displayMode = ReaderDisplayMode.EPUB_TYPOGRAPHY,
                                 comicPages = emptyList(),
                                 currentComicPage = 0,
                                 epubStructure = structure,
                                 currentChapterIndex = safeChapter,
+                                currentChapterOffsetPermille = restoredOffset,
+                                chapterScrollRestoreToken = it.chapterScrollRestoreToken + 1,
                                 currentChapterBlocks = blocks
                             )
                         }
+                        repo.persistReadingProgressAsync(
+                            bookId = book.id,
+                            unitIndex = safeChapter,
+                            offset = restoredOffset,
+                            totalUnits = chapters.size.coerceAtLeast(1),
+                            isTextFlow = true,
+                            preserveCompleted = preserveCompleted
+                        )
                     }
 
                     BookFormat.CBZ, BookFormat.ZIP, BookFormat.EPUB -> {
@@ -206,6 +254,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                                 EpubParser.parseStructure(session)
                             }
                             val safeChapter = book.currentUnit.coerceIn(0, (structure.chapters.size - 1).coerceAtLeast(0))
+                            val restoredOffset = book.currentOffset.coerceIn(0, 1000)
                             val blocks = if (structure.chapters.isNotEmpty()) {
                                 withContext(Dispatchers.IO) {
                                     EpubParser.parseChapterContent(session, structure.chapters[safeChapter].entryPath)
@@ -218,16 +267,45 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                             } else {
                                 ReaderDisplayMode.COMIC
                             }
+                            val preserveCompleted = book.readingStatus == ReadingStatus.COMPLETED
                             _uiState.update {
                                 it.copy(
                                     isLoading = false,
-                                    book = book,
+                                    book = book.copy(
+                                        currentUnit = safeChapter,
+                                        currentOffset = restoredOffset,
+                                        readingStatus = if (preserveCompleted) ReadingStatus.COMPLETED else ReadingStatus.READING
+                                    ),
                                     displayMode = initialMode,
                                     comicPages = images,
-                                    currentComicPage = 0,
+                                    currentComicPage = if (initialMode == ReaderDisplayMode.COMIC) {
+                                        book.currentUnit.coerceIn(0, (images.size - 1).coerceAtLeast(0))
+                                    } else 0,
+                                    comicScrollSyncToken = it.comicScrollSyncToken + 1,
                                     epubStructure = structure,
                                     currentChapterIndex = safeChapter,
+                                    currentChapterOffsetPermille = restoredOffset,
+                                    chapterScrollRestoreToken = it.chapterScrollRestoreToken + 1,
                                     currentChapterBlocks = blocks
+                                )
+                            }
+                            if (initialMode == ReaderDisplayMode.EPUB_TYPOGRAPHY) {
+                                repo.persistReadingProgressAsync(
+                                    bookId = book.id,
+                                    unitIndex = safeChapter,
+                                    offset = restoredOffset,
+                                    totalUnits = structure.chapters.size.coerceAtLeast(1),
+                                    isTextFlow = true,
+                                    preserveCompleted = preserveCompleted
+                                )
+                            } else if (images.isNotEmpty()) {
+                                repo.persistReadingProgressAsync(
+                                    bookId = book.id,
+                                    unitIndex = book.currentUnit.coerceIn(0, images.size - 1),
+                                    offset = 0,
+                                    totalUnits = images.size,
+                                    isTextFlow = false,
+                                    preserveCompleted = preserveCompleted
                                 )
                             }
                         } else {
@@ -235,18 +313,32 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                                 throw IllegalStateException("未能从压缩包内解析出图片页面")
                             }
                             val safePage = book.currentUnit.coerceIn(0, images.size - 1)
+                            val preserveCompleted = book.readingStatus == ReadingStatus.COMPLETED
                             _uiState.update {
                                 it.copy(
                                     isLoading = false,
-                                    book = book,
+                                    book = book.copy(
+                                        currentUnit = safePage,
+                                        readingStatus = if (preserveCompleted) ReadingStatus.COMPLETED else ReadingStatus.READING
+                                    ),
                                     displayMode = ReaderDisplayMode.COMIC,
                                     comicPages = images,
                                     currentComicPage = safePage,
+                                    comicScrollSyncToken = it.comicScrollSyncToken + 1,
                                     epubStructure = null,
                                     currentChapterIndex = 0,
+                                    currentChapterOffsetPermille = 0,
                                     currentChapterBlocks = emptyList()
                                 )
                             }
+                            repo.persistReadingProgressAsync(
+                                bookId = book.id,
+                                unitIndex = safePage,
+                                offset = 0,
+                                totalUnits = images.size,
+                                isTextFlow = false,
+                                preserveCompleted = preserveCompleted
+                            )
                         }
                     }
                 }
@@ -265,19 +357,34 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(displayMode = mode) }
     }
 
-    fun onComicPageChanged(pageIndex: Int) {
+    fun onComicPageChanged(pageIndex: Int, fromUserScroll: Boolean = false) {
         val state = _uiState.value
         val total = state.comicPages.size
         if (total == 0) return
         val clamped = pageIndex.coerceIn(0, total - 1)
-        if (clamped == state.currentComicPage) return
+        if (clamped == state.currentComicPage && fromUserScroll) return
 
-        _uiState.update { it.copy(currentComicPage = clamped) }
+        val isCompletedNow = clamped >= total - 1
+        _uiState.update { current ->
+            current.copy(
+                currentComicPage = clamped,
+                comicScrollSyncToken = if (fromUserScroll) current.comicScrollSyncToken else current.comicScrollSyncToken + 1,
+                book = current.book?.copy(
+                    currentUnit = clamped,
+                    currentOffset = 0,
+                    readingStatus = if (isCompletedNow) ReadingStatus.COMPLETED else ReadingStatus.READING
+                )
+            )
+        }
         val book = state.book ?: return
         if (state.displayMode == ReaderDisplayMode.COMIC) {
-            viewModelScope.launch {
-                repo.updateReadingProgress(book.id, clamped, 0, total)
-            }
+            repo.persistReadingProgressAsync(
+                bookId = book.id,
+                unitIndex = clamped,
+                offset = 0,
+                totalUnits = total,
+                isTextFlow = false
+            )
         }
     }
 
@@ -286,9 +393,22 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         val chapters = state.epubStructure?.chapters ?: return
         if (chapters.isEmpty()) return
         val clamped = chapterIndex.coerceIn(0, chapters.size - 1)
+        scrollSaveJob?.cancel()
 
         viewModelScope.launch {
-            _uiState.update { it.copy(isChapterLoading = true, currentChapterIndex = clamped) }
+            _uiState.update {
+                it.copy(
+                    isChapterLoading = true,
+                    currentChapterIndex = clamped,
+                    currentChapterOffsetPermille = 0,
+                    chapterScrollRestoreToken = it.chapterScrollRestoreToken + 1,
+                    book = it.book?.copy(
+                        currentUnit = clamped,
+                        currentOffset = 0,
+                        readingStatus = ReadingStatus.READING
+                    )
+                )
+            }
             val blocks = withContext(Dispatchers.IO) {
                 sessionMutex.withLock {
                     if (activeTextChapters.isNotEmpty()) {
@@ -306,8 +426,104 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 )
             }
             state.book?.let { book ->
-                repo.updateReadingProgress(book.id, clamped, 0, chapters.size)
+                repo.persistReadingProgressAsync(
+                    bookId = book.id,
+                    unitIndex = clamped,
+                    offset = 0,
+                    totalUnits = chapters.size,
+                    isTextFlow = true
+                )
             }
+        }
+    }
+
+    fun onChapterScrollProgressChanged(offsetPermille: Int) {
+        val state = _uiState.value
+        if (state.displayMode != ReaderDisplayMode.EPUB_TYPOGRAPHY || state.isChapterLoading) return
+        val book = state.book ?: return
+        val chapters = state.epubStructure?.chapters ?: return
+        if (chapters.isEmpty()) return
+
+        val clampedOffset = offsetPermille.coerceIn(0, 1000)
+        val total = chapters.size
+        val chapterIdx = state.currentChapterIndex.coerceIn(0, total - 1)
+        val isCompleted = chapterIdx >= total - 1 && clampedOffset >= 960
+
+        _uiState.update { current ->
+            current.copy(
+                currentChapterOffsetPermille = clampedOffset,
+                book = current.book?.copy(
+                    currentUnit = chapterIdx,
+                    currentOffset = clampedOffset,
+                    readingStatus = if (isCompleted) ReadingStatus.COMPLETED else ReadingStatus.READING
+                )
+            )
+        }
+
+        scrollSaveJob?.cancel()
+        scrollSaveJob = viewModelScope.launch {
+            delay(250L)
+            repo.persistReadingProgressAsync(
+                bookId = book.id,
+                unitIndex = chapterIdx,
+                offset = clampedOffset,
+                totalUnits = total,
+                isTextFlow = true
+            )
+        }
+    }
+
+    fun scrubSingleChapterToPermille(offsetPermille: Int) {
+        val state = _uiState.value
+        val book = state.book ?: return
+        val total = (state.epubStructure?.chapters?.size ?: 1).coerceAtLeast(1)
+        val clamped = offsetPermille.coerceIn(0, 1000)
+        val isCompleted = state.currentChapterIndex >= total - 1 && clamped >= 960
+        scrollSaveJob?.cancel()
+
+        _uiState.update { current ->
+            current.copy(
+                currentChapterOffsetPermille = clamped,
+                chapterScrollRestoreToken = current.chapterScrollRestoreToken + 1,
+                book = current.book?.copy(
+                    currentUnit = current.currentChapterIndex,
+                    currentOffset = clamped,
+                    readingStatus = if (isCompleted) ReadingStatus.COMPLETED else ReadingStatus.READING
+                )
+            )
+        }
+        repo.persistReadingProgressAsync(
+            bookId = book.id,
+            unitIndex = state.currentChapterIndex,
+            offset = clamped,
+            totalUnits = total,
+            isTextFlow = true
+        )
+    }
+
+    fun flushPendingProgress() {
+        scrollSaveJob?.cancel()
+        val state = _uiState.value
+        val book = state.book ?: return
+        if (state.isLoading || state.errorMessage != null) return
+
+        if (state.displayMode == ReaderDisplayMode.EPUB_TYPOGRAPHY) {
+            val total = (state.epubStructure?.chapters?.size ?: book.totalUnits).coerceAtLeast(1)
+            repo.persistReadingProgressAsync(
+                bookId = book.id,
+                unitIndex = state.currentChapterIndex,
+                offset = state.currentChapterOffsetPermille,
+                totalUnits = total,
+                isTextFlow = true
+            )
+        } else if (state.comicPages.isNotEmpty()) {
+            repo.persistReadingProgressAsync(
+                bookId = book.id,
+                unitIndex = state.currentComicPage,
+                offset = 0,
+                totalUnits = state.comicPages.size,
+                isTextFlow = false
+            )
         }
     }
 
@@ -428,6 +644,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     fun getCurrentChapters(): List<EpubChapter> = _uiState.value.epubStructure?.chapters.orEmpty()
 
     override fun onCleared() {
+        flushPendingProgress()
         super.onCleared()
         bookmarksJob?.cancel()
         runCatching { activeSession?.close() }
