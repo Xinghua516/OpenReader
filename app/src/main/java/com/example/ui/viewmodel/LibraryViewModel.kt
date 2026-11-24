@@ -52,6 +52,7 @@ data class LibraryUiState(
     val tagsWithCounts: List<TagWithCount> = emptyList(),
     val filteredTagGroups: Map<String, List<TagWithCount>> = emptyMap(),
     val collectionsWithCounts: List<CollectionWithCount> = emptyList(),
+    val filteredCollections: List<CollectionWithCount> = emptyList(),
     val smartRules: List<SmartRuleEntity> = emptyList(),
     val authorizedFolders: List<AuthorizedFolderEntity> = emptyList(),
     val importTasks: List<ImportTask> = emptyList(),
@@ -63,6 +64,110 @@ data class LibraryUiState(
     val isTagBatchMode: Boolean = false,
     val selectedBatchTagIds: Set<Long> = emptySet()
 )
+
+object BookshelfSearchEngine {
+
+    fun tokenize(query: String): List<String> =
+        query.trim()
+            .split(Regex("\\s+"))
+            .mapNotNull { raw ->
+                val trimmed = raw.trim()
+                val normalized = if (trimmed.startsWith("#") && trimmed.length > 1) {
+                    trimmed.drop(1)
+                } else {
+                    trimmed
+                }
+                normalized.takeIf { it.isNotEmpty() }
+            }
+
+    fun matchesBookToken(item: BookWithTags, token: String): Boolean {
+        val book = item.book
+        return book.title.contains(token, ignoreCase = true) ||
+            book.author.contains(token, ignoreCase = true) ||
+            book.categoryGroup.contains(token, ignoreCase = true) ||
+            book.format.badgeLabel.contains(token, ignoreCase = true) ||
+            book.format.name.contains(token, ignoreCase = true) ||
+            item.tags.any { it.name.contains(token, ignoreCase = true) } ||
+            item.collections.any { it.name.contains(token, ignoreCase = true) }
+    }
+
+    fun matchesBook(item: BookWithTags, tokens: List<String>): Boolean {
+        if (tokens.isEmpty()) return true
+        return tokens.all { token -> matchesBookToken(item, token) }
+    }
+
+    fun filterBooks(
+        books: List<BookWithTags>,
+        query: String,
+        filter: BookshelfFilter,
+        sortOrder: BookshelfSortOrder
+    ): List<BookWithTags> {
+        val afterFilter = books.filter { item ->
+            val book = item.book
+            when (filter) {
+                BookshelfFilter.All -> true
+                BookshelfFilter.Comics -> book.format == BookFormat.CBZ || book.format == BookFormat.ZIP
+                BookshelfFilter.Ebooks -> book.format.isEbook
+                BookshelfFilter.Reading -> book.readingStatus == ReadingStatus.READING
+                BookshelfFilter.Unread -> book.readingStatus == ReadingStatus.UNREAD
+                BookshelfFilter.Completed -> book.readingStatus == ReadingStatus.COMPLETED
+                is BookshelfFilter.ByTag -> item.tags.any { it.id == filter.tagId }
+                is BookshelfFilter.ByCategory -> book.categoryGroup == filter.category
+                is BookshelfFilter.ByCollection -> item.collections.any { it.id == filter.collectionId }
+            }
+        }
+
+        val tokens = tokenize(query)
+        val afterQuery = if (tokens.isEmpty()) {
+            afterFilter
+        } else {
+            afterFilter.filter { item -> matchesBook(item, tokens) }
+        }
+
+        return when (sortOrder) {
+            BookshelfSortOrder.RECENT_READ -> afterQuery.sortedByDescending {
+                maxOf(it.book.lastReadAt, it.book.addedAt)
+            }
+            BookshelfSortOrder.ADDED_DESC -> afterQuery.sortedByDescending { it.book.addedAt }
+            BookshelfSortOrder.TITLE_ASC -> afterQuery.sortedBy { it.book.title.lowercase() }
+            BookshelfSortOrder.PROGRESS_DESC -> afterQuery.sortedByDescending { it.book.progressFraction }
+        }
+    }
+
+    fun filterCollections(
+        collections: List<CollectionWithCount>,
+        books: List<BookWithTags>,
+        query: String
+    ): List<CollectionWithCount> {
+        val tokens = tokenize(query)
+        if (tokens.isEmpty()) return collections
+
+        val booksByCollectionId = HashMap<Long, MutableList<BookWithTags>>()
+        books.forEach { item ->
+            item.collections.forEach { col ->
+                booksByCollectionId.getOrPut(col.id) { mutableListOf() }.add(item)
+            }
+        }
+
+        return collections.filter { colWithCount ->
+            val col = colWithCount.collection
+            val matchesCollectionMetaOnly = tokens.all { token ->
+                col.name.contains(token, ignoreCase = true) ||
+                    col.description.contains(token, ignoreCase = true)
+            }
+            if (matchesCollectionMetaOnly) return@filter true
+
+            val members = booksByCollectionId[col.id].orEmpty()
+            members.any { member ->
+                tokens.all { token ->
+                    col.name.contains(token, ignoreCase = true) ||
+                        col.description.contains(token, ignoreCase = true) ||
+                        matchesBookToken(member, token)
+                }
+            }
+        }
+    }
+}
 
 private data class FilterInputs(
     val bookshelfQuery: String,
@@ -117,11 +222,16 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         prefsRepo.preferencesFlow,
         filterInputs
     ) { snapshot, prefs, inputs ->
-        val filteredBooks = applyBookFiltersAndSort(
+        val filteredBooks = BookshelfSearchEngine.filterBooks(
             books = snapshot.books,
             query = inputs.bookshelfQuery,
             filter = inputs.filter,
             sortOrder = prefs.sortOrder
+        )
+        val filteredCollections = BookshelfSearchEngine.filterCollections(
+            collections = snapshot.collections,
+            books = snapshot.books,
+            query = inputs.bookshelfQuery
         )
         val categories = snapshot.books
             .map { it.book.categoryGroup }
@@ -147,6 +257,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             tagsWithCounts = snapshot.tags,
             filteredTagGroups = groupedTags,
             collectionsWithCounts = snapshot.collections,
+            filteredCollections = filteredCollections,
             smartRules = snapshot.rules,
             authorizedFolders = snapshot.folders,
             importTasks = snapshot.tasks,
@@ -163,50 +274,6 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = LibraryUiState()
     )
-
-    private fun applyBookFiltersAndSort(
-        books: List<BookWithTags>,
-        query: String,
-        filter: BookshelfFilter,
-        sortOrder: BookshelfSortOrder
-    ): List<BookWithTags> {
-        val afterFilter = books.filter { item ->
-            val book = item.book
-            when (filter) {
-                BookshelfFilter.All -> true
-                BookshelfFilter.Comics -> book.format == BookFormat.CBZ || book.format == BookFormat.ZIP
-                BookshelfFilter.Ebooks -> book.format.isEbook
-                BookshelfFilter.Reading -> book.readingStatus == ReadingStatus.READING
-                BookshelfFilter.Unread -> book.readingStatus == ReadingStatus.UNREAD
-                BookshelfFilter.Completed -> book.readingStatus == ReadingStatus.COMPLETED
-                is BookshelfFilter.ByTag -> item.tags.any { it.id == filter.tagId }
-                is BookshelfFilter.ByCategory -> book.categoryGroup == filter.category
-                is BookshelfFilter.ByCollection -> item.collections.any { it.id == filter.collectionId }
-            }
-        }
-
-        val afterQuery = if (query.isBlank()) {
-            afterFilter
-        } else {
-            val q = query.trim()
-            afterFilter.filter { item ->
-                item.book.title.contains(q, ignoreCase = true) ||
-                    item.book.author.contains(q, ignoreCase = true) ||
-                    item.book.categoryGroup.contains(q, ignoreCase = true) ||
-                    item.tags.any { it.name.contains(q, ignoreCase = true) } ||
-                    item.collections.any { it.name.contains(q, ignoreCase = true) }
-            }
-        }
-
-        return when (sortOrder) {
-            BookshelfSortOrder.RECENT_READ -> afterQuery.sortedByDescending {
-                maxOf(it.book.lastReadAt, it.book.addedAt)
-            }
-            BookshelfSortOrder.ADDED_DESC -> afterQuery.sortedByDescending { it.book.addedAt }
-            BookshelfSortOrder.TITLE_ASC -> afterQuery.sortedBy { it.book.title.lowercase() }
-            BookshelfSortOrder.PROGRESS_DESC -> afterQuery.sortedByDescending { it.book.progressFraction }
-        }
-    }
 
     fun refreshStorageStats() {
         storageStatus.value = StorageStatsProvider.readStorageStatus(app)
@@ -322,7 +389,20 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             repo.deleteBook(book)
             refreshStorageStats()
-            _toastEvents.tryEmit("已从书架移除《${book.title}》")
+            _toastEvents.tryEmit("已从书架移除《${book.title}》（本地原文件已保留）")
+        }
+    }
+
+    fun deleteBooks(bookIds: Set<Long>) {
+        if (bookIds.isEmpty()) return
+        val targets = uiState.value.allBooks
+            .map { it.book }
+            .filter { it.id in bookIds }
+        if (targets.isEmpty()) return
+        viewModelScope.launch {
+            repo.deleteBooks(targets)
+            refreshStorageStats()
+            _toastEvents.tryEmit("已从书架移出 ${targets.size} 本书籍（本地原文件已保留）")
         }
     }
 

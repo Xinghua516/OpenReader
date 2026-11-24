@@ -700,6 +700,196 @@ class BookParserAndDbTest {
         }
     }
 
+    @Test
+    fun `bookshelf search engine filters books comics and collections by title author and tags`() {
+        val sciFiTag = TagEntity(id = 1L, name = "科幻", categoryGroup = "题材")
+        val webtoonTag = TagEntity(id = 2L, name = "条漫", categoryGroup = "载体")
+        val actionTag = TagEntity(id = 3L, name = "热血", categoryGroup = "题材")
+
+        val weekendCollection = com.example.data.local.entity.CollectionEntity(
+            id = 10L,
+            name = "周末必看",
+            description = "精选连载书单"
+        )
+        val designCollection = com.example.data.local.entity.CollectionEntity(
+            id = 20L,
+            name = "设计灵感",
+            description = "排版美学"
+        )
+
+        val comicBook = com.example.data.local.entity.BookWithTags(
+            book = BookEntity(
+                id = 100L,
+                title = "间谍过家家 Vol.08",
+                author = "远藤达哉",
+                format = BookFormat.CBZ,
+                sourceUri = "file:///spy.cbz",
+                fileHash = "spy",
+                fileSizeBytes = 500L,
+                totalUnits = 120
+            ),
+            tags = listOf(webtoonTag, actionTag),
+            collections = listOf(weekendCollection)
+        )
+        val sciFiEpub = com.example.data.local.entity.BookWithTags(
+            book = BookEntity(
+                id = 101L,
+                title = "三体全集",
+                author = "刘慈欣",
+                format = BookFormat.EPUB,
+                sourceUri = "file:///3body.epub",
+                fileHash = "3b",
+                fileSizeBytes = 900L,
+                totalUnits = 30
+            ),
+            tags = listOf(sciFiTag),
+            collections = listOf(weekendCollection)
+        )
+        val designMd = com.example.data.local.entity.BookWithTags(
+            book = BookEntity(
+                id = 102L,
+                title = "设计中的留白",
+                author = "原研哉",
+                format = BookFormat.MD,
+                sourceUri = "file:///design.md",
+                fileHash = "md",
+                fileSizeBytes = 300L,
+                totalUnits = 5
+            ),
+            tags = emptyList(),
+            collections = listOf(designCollection)
+        )
+
+        val allBooks = listOf(comicBook, sciFiEpub, designMd)
+        val allCollections = listOf(
+            com.example.data.local.entity.CollectionWithCount(weekendCollection, 2),
+            com.example.data.local.entity.CollectionWithCount(designCollection, 1)
+        )
+
+        // 1. Filter by title
+        val byTitle = com.example.ui.viewmodel.BookshelfSearchEngine.filterBooks(
+            books = allBooks,
+            query = "间谍",
+            filter = com.example.ui.viewmodel.BookshelfFilter.All,
+            sortOrder = com.example.data.preferences.BookshelfSortOrder.RECENT_READ
+        )
+        assertEquals(listOf(100L), byTitle.map { it.book.id })
+
+        // 2. Filter by author + verify matching collection surfaces too
+        val byAuthorBooks = com.example.ui.viewmodel.BookshelfSearchEngine.filterBooks(
+            books = allBooks,
+            query = "刘慈欣",
+            filter = com.example.ui.viewmodel.BookshelfFilter.All,
+            sortOrder = com.example.data.preferences.BookshelfSortOrder.RECENT_READ
+        )
+        val byAuthorCollections = com.example.ui.viewmodel.BookshelfSearchEngine.filterCollections(
+            collections = allCollections,
+            books = allBooks,
+            query = "刘慈欣"
+        )
+        assertEquals(listOf(101L), byAuthorBooks.map { it.book.id })
+        assertEquals(listOf(10L), byAuthorCollections.map { it.collection.id })
+
+        // 3. Filter by tag with # prefix + multi-token author+tag
+        val byTagBooks = com.example.ui.viewmodel.BookshelfSearchEngine.filterBooks(
+            books = allBooks,
+            query = "#条漫 远藤",
+            filter = com.example.ui.viewmodel.BookshelfFilter.All,
+            sortOrder = com.example.data.preferences.BookshelfSortOrder.RECENT_READ
+        )
+        val byTagCollections = com.example.ui.viewmodel.BookshelfSearchEngine.filterCollections(
+            collections = allCollections,
+            books = allBooks,
+            query = "#条漫 远藤"
+        )
+        assertEquals(listOf(100L), byTagBooks.map { it.book.id })
+        assertEquals(listOf(10L), byTagCollections.map { it.collection.id })
+
+        // 4. Filter by collection name matches both collection and books inside it
+        val byColBooks = com.example.ui.viewmodel.BookshelfSearchEngine.filterBooks(
+            books = allBooks,
+            query = "排版美学",
+            filter = com.example.ui.viewmodel.BookshelfFilter.All,
+            sortOrder = com.example.data.preferences.BookshelfSortOrder.RECENT_READ
+        )
+        val byColFolders = com.example.ui.viewmodel.BookshelfSearchEngine.filterCollections(
+            collections = allCollections,
+            books = allBooks,
+            query = "排版美学"
+        )
+        assertTrue(byColBooks.isEmpty()) // description is on collection itself
+        assertEquals(listOf(20L), byColFolders.map { it.collection.id })
+
+        val byColNameBooks = com.example.ui.viewmodel.BookshelfSearchEngine.filterBooks(
+            books = allBooks,
+            query = "设计灵感",
+            filter = com.example.ui.viewmodel.BookshelfFilter.All,
+            sortOrder = com.example.data.preferences.BookshelfSortOrder.RECENT_READ
+        )
+        assertEquals(listOf(102L), byColNameBooks.map { it.book.id })
+    }
+
+    @Test
+    fun `repository batch deleteBooks unimports from bookshelf without deleting original local files`() = runTest {
+        val prefsRepo = AppPreferencesRepository(context)
+        val repo = LibraryRepository(context, db.libraryDao(), prefsRepo)
+        val dao = db.libraryDao()
+
+        val externalDir = File(context.noBackupFilesDir, "user_local_originals").apply { mkdirs() }
+        val originalExternalFile = File(externalDir, "user_comic_original.cbz").apply { writeText("original") }
+        val internalLibDir = File(context.filesDir, "library").apply { mkdirs() }
+        val internalCopy = File(internalLibDir, "copied.cbz").apply { writeText("copy") }
+
+        try {
+            val id1 = dao.insertBook(
+                BookEntity(
+                    title = "外部原文件漫画",
+                    format = BookFormat.CBZ,
+                    sourceUri = Uri.fromFile(originalExternalFile).toString(),
+                    localCopyPath = originalExternalFile.absolutePath,
+                    fileHash = "ext1",
+                    fileSizeBytes = 8L,
+                    totalUnits = 10
+                )
+            )
+            val id2 = dao.insertBook(
+                BookEntity(
+                    title = "内部副本漫画",
+                    format = BookFormat.ZIP,
+                    sourceUri = "content://docs/2",
+                    localCopyPath = internalCopy.absolutePath,
+                    fileHash = "int2",
+                    fileSizeBytes = 4L,
+                    totalUnits = 5
+                )
+            )
+            val id3 = dao.insertBook(
+                BookEntity(
+                    title = "保留书籍",
+                    format = BookFormat.EPUB,
+                    sourceUri = "content://docs/3",
+                    fileHash = "keep3",
+                    fileSizeBytes = 12L,
+                    totalUnits = 3
+                )
+            )
+
+            val b1 = dao.getBookWithTagsOnce(id1)!!.book
+            val b2 = dao.getBookWithTagsOnce(id2)!!.book
+            repo.deleteBooks(listOf(b1, b2))
+
+            assertEquals(null, dao.getBookWithTagsOnce(id1))
+            assertEquals(null, dao.getBookWithTagsOnce(id2))
+            assertNotNull(dao.getBookWithTagsOnce(id3))
+
+            // Original external file MUST still exist; app-internal copy is cleaned up
+            assertTrue(originalExternalFile.exists())
+            assertTrue(!internalCopy.exists())
+        } finally {
+            externalDir.deleteRecursively()
+        }
+    }
+
     private fun createTinyPngBytes(): ByteArray {
         val bmp = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
         val out = ByteArrayOutputStream()

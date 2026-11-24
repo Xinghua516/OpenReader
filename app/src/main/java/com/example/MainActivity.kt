@@ -330,7 +330,8 @@ private fun TonalFolioRoot(
                                 onAddBooksToCollection = libraryViewModel::addBooksToCollection,
                                 onSetBookStatus = libraryViewModel::setBookStatus,
                                 onToggleBookFavorite = libraryViewModel::toggleBookFavorite,
-                                onDeleteBook = libraryViewModel::deleteBook
+                                onDeleteBook = libraryViewModel::deleteBook,
+                                onDeleteBooks = libraryViewModel::deleteBooks
                             )
                         }
 

@@ -522,9 +522,32 @@ class LibraryRepository(
     }
 
     suspend fun deleteBook(book: BookEntity) = withContext(Dispatchers.IO) {
-        book.coverPath?.let { runCatching { File(it).delete() } }
-        book.localCopyPath?.let { runCatching { File(it).delete() } }
+        deleteInternalFileSafely(book.coverPath)
+        deleteInternalFileSafely(book.localCopyPath)
         dao.deleteBookById(book.id)
+    }
+
+    suspend fun deleteBooks(books: List<BookEntity>) = withContext(Dispatchers.IO) {
+        if (books.isEmpty()) return@withContext
+        books.forEach { book ->
+            deleteInternalFileSafely(book.coverPath)
+            deleteInternalFileSafely(book.localCopyPath)
+        }
+        dao.deleteBooksByIds(books.map { it.id })
+    }
+
+    private fun deleteInternalFileSafely(path: String?) {
+        if (path.isNullOrBlank()) return
+        runCatching {
+            val target = File(path).canonicalFile
+            val internalFilesRoot = context.filesDir.canonicalPath
+            val internalCacheRoot = context.cacheDir.canonicalPath
+            if (target.path.startsWith(internalFilesRoot) || target.path.startsWith(internalCacheRoot)) {
+                if (target.exists()) {
+                    target.delete()
+                }
+            }
+        }
     }
 
     // Tag CRUD

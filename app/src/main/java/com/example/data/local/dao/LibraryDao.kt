@@ -69,6 +69,9 @@ interface LibraryDao {
     @Query("DELETE FROM books WHERE id = :bookId")
     suspend fun deleteBookById(bookId: Long)
 
+    @Query("DELETE FROM books WHERE id IN (:bookIds)")
+    suspend fun deleteBooksByIds(bookIds: List<Long>)
+
     // Tags
     @Query(
         """

@@ -97,8 +97,11 @@ fun CollapsibleCollectionsSection(
     onManageBooksInCollection: (CollectionEntity) -> Unit,
     onEditCollectionClick: (CollectionEntity) -> Unit,
     onDeleteCollectionClick: (CollectionEntity) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    totalCollectionsCount: Int = collections.size,
+    searchQuery: String = ""
 ) {
+    val isSearchActive = searchQuery.isNotBlank()
     val chevronRotation by animateFloatAsState(
         targetValue = if (expanded) 0f else -90f,
         animationSpec = tween(durationMillis = 200),
@@ -144,13 +147,17 @@ fun CollapsibleCollectionsSection(
                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
                     color = MaterialTheme.colorScheme.onSurface
                 )
-                if (collections.isNotEmpty()) {
+                if (collections.isNotEmpty() || (isSearchActive && totalCollectionsCount > 0)) {
                     Surface(
                         shape = CircleShape,
                         color = MaterialTheme.colorScheme.secondaryContainer
                     ) {
                         Text(
-                            text = "${collections.size}",
+                            text = if (isSearchActive && totalCollectionsCount > 0) {
+                                "${collections.size}/$totalCollectionsCount"
+                            } else {
+                                "${collections.size}"
+                            },
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                             color = MaterialTheme.colorScheme.onSecondaryContainer,
                             modifier = Modifier.padding(horizontal = 7.dp, vertical = 1.dp)
@@ -158,7 +165,11 @@ fun CollapsibleCollectionsSection(
                     }
                     if (!expanded) {
                         Text(
-                            text = collections.take(3).joinToString(" · ") { it.collection.name },
+                            text = if (isSearchActive && collections.isEmpty()) {
+                                "无匹配合集"
+                            } else {
+                                collections.take(3).joinToString(" · ") { it.collection.name }
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -168,7 +179,7 @@ fun CollapsibleCollectionsSection(
                     }
                 } else if (!expanded) {
                     Text(
-                        text = "未创建 · 点击展开",
+                        text = if (isSearchActive) "无匹配合集" else "未创建 · 点击展开",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -207,48 +218,71 @@ fun CollapsibleCollectionsSection(
             exit = shrinkVertically(animationSpec = tween(200)) + fadeOut(animationSpec = tween(150))
         ) {
             if (collections.isEmpty()) {
-                Surface(
-                    onClick = onCreateCollectionClick,
-                    shape = RoundedCornerShape(14.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("empty_collections_prompt")
-                ) {
-                    Row(
+                if (isSearchActive) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            .testTag("empty_search_collections_prompt")
                     ) {
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.secondaryContainer,
-                            modifier = Modifier.size(36.dp)
+                        Text(
+                            text = if (totalCollectionsCount > 0) {
+                                "未找到与「${searchQuery.trim()}」匹配的合集文件夹"
+                            } else {
+                                "暂无合集文件夹"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                        )
+                    }
+                } else {
+                    Surface(
+                        onClick = onCreateCollectionClick,
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("empty_collections_prompt")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Outlined.CreateNewFolder,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(20.dp)
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.CreateNewFolder,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "创建你的第一个合集文件夹",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "按系列、待读计划或题材把漫画与电子书归整到一起",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
-                        }
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "创建你的第一个合集文件夹",
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "按系列、待读计划或题材把漫画与电子书归整到一起",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
                         }
                     }
                 }

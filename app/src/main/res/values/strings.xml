@@ -3,7 +3,7 @@
     <string name="nav_bookshelf">书架</string>
     <string name="nav_import">导入</string>
     <string name="nav_settings">设置</string>
-    <string name="bookshelf_search_hint">搜索书名、作者或标签…</string>
+    <string name="bookshelf_search_hint">搜索书名、作者、合集或标签…</string>
     <string name="action_import">导入</string>
     <string name="status_unread">未读</string>
     <string name="status_reading">在读</string>
