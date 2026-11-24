@@ -1,0 +1,6 @@
+{
+  "name": "Tonal Folio",
+  "description": "Material 3 local comic (ZIP/CBZ) and eBook (EPUB) reader with bookshelf management, smart tagging, and dual-mode immersive reading for Android 13+.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
